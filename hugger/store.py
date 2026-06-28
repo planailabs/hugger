@@ -50,19 +50,28 @@ def _connect() -> sqlite3.Connection:
 # --- archives ------------------------------------------------------------
 
 def upsert_archive(repo_id: str, revision: str, sha: str, path: str,
-                   size_bytes: int, store_id: str) -> None:
+                   size_bytes: int, store_id: str, total_bytes: int | None = None,
+                   n_files: int = 0, n_downloaded: int = 0, complete: bool = True) -> None:
+    """Cache an archive row. The .hugger.json file is the source of truth; this is
+    a rebuildable cache (see import_store)."""
+    if total_bytes is None:
+        total_bytes = size_bytes
     with closing(_connect()) as conn, conn:
         conn.execute(
             """INSERT INTO archives
                  (repo_id, revision, sha, path, size_bytes, archived_at, last_checked,
-                  update_available, remote_sha, store_id)
-               VALUES (?,?,?,?,?,?,?,0,?,?)
+                  update_available, remote_sha, store_id, total_bytes, n_files,
+                  n_downloaded, complete)
+               VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?)
                ON CONFLICT(repo_id) DO UPDATE SET
                  revision=excluded.revision, sha=excluded.sha, path=excluded.path,
                  size_bytes=excluded.size_bytes, archived_at=excluded.archived_at,
                  last_checked=excluded.last_checked, update_available=0,
-                 remote_sha=excluded.remote_sha, store_id=excluded.store_id""",
-            (repo_id, revision, sha, path, size_bytes, _now(), _now(), sha, store_id),
+                 remote_sha=excluded.remote_sha, store_id=excluded.store_id,
+                 total_bytes=excluded.total_bytes, n_files=excluded.n_files,
+                 n_downloaded=excluded.n_downloaded, complete=excluded.complete""",
+            (repo_id, revision, sha, path, size_bytes, _now(), _now(), sha, store_id,
+             total_bytes, n_files, n_downloaded, 1 if complete else 0),
         )
 
 

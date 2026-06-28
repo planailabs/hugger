@@ -11,7 +11,7 @@ _TMP = tempfile.mkdtemp(prefix="hugger-test-")
 os.environ["HUGGER_HOME"] = _TMP
 os.environ["HUGGER_ARCHIVE_DIR"] = str(Path(_TMP) / "archives")
 
-from hugger import store, jobs, hub  # noqa: E402
+from hugger import store, jobs, hub, metadata, util  # noqa: E402
 from hugger.app import human_size  # noqa: E402
 from hugger import auth  # noqa: E402
 
@@ -163,6 +163,69 @@ def test_move_job_across_stores():
     assert (dest / "w.bin").stat().st_size == 2048
     assert not src.exists()  # source copy removed after the move
     store.delete_archive("org/mover")
+    store.delete_store(b)
+
+
+def test_metadata_build_and_state():
+    files = [{"path": "config.json", "size": 2}, {"path": "w.bin", "size": 100}]
+    meta = metadata.build("o/m", "main", "sha", files, ["config.json"])
+    assert meta["total_size"] == 2 and [f["path"] for f in meta["files"]] == ["config.json"]
+
+    d = Path(_TMP) / "metatest"
+    metadata.write(d, metadata.build("o/m", "main", "sha", files, None))
+    (d / "config.json").write_bytes(b"{}")  # size 2; w.bin missing
+    st = metadata.state(d, metadata.read(d))
+    assert st["n_files"] == 2 and st["n_downloaded"] == 1 and st["complete"] is False
+    assert metadata.file_downloaded(d, "config.json", 2)
+    assert not metadata.file_downloaded(d, "w.bin", 100)
+
+
+def test_util_writable_and_free():
+    d = Path(_TMP) / "wtest"
+    util.check_writable(d)  # creates + verifies, no raise
+    assert util.free_space(d) > 0
+
+
+def test_disk_space_check_blocks_download():
+    a = store.ensure_default_store(str(Path(_TMP) / "archives"))
+    of, ofree = jobs.hub.repo_files, jobs.util.free_space
+    jobs.hub.repo_files = lambda repo, rev="main": {"sha": "s", "files": [{"path": "big.bin", "size": 10**9}]}
+    jobs.util.free_space = lambda p: 1000
+    try:
+        raised = False
+        try:
+            jobs.manager.start_download("org/toobig", store_id=a)
+        except jobs.InsufficientSpace:
+            raised = True
+        assert raised, "expected InsufficientSpace"
+    finally:
+        jobs.hub.repo_files, jobs.util.free_space = of, ofree
+
+
+def test_pending_bytes_accounting():
+    a = store.get_default_store()["id"]
+    j = jobs.Job(id="p1", repo_id="o/m", store_id=a, status="running", total_bytes=500, done_bytes=200)
+    jobs.manager._jobs["p1"] = j
+    try:
+        contribution = jobs.manager.pending_bytes(a) - jobs.manager.pending_bytes(a, exclude="p1")
+        assert contribution == 300
+    finally:
+        jobs.manager._jobs.pop("p1", None)
+
+
+def test_import_store_and_file_status():
+    b = store.add_store("imp", str(Path(_TMP) / "imp"))
+    mdir = jobs.store_repo_path(store.get_store(b)["path"], "org/imported")
+    files = [{"path": "config.json", "size": 2}, {"path": "w.bin", "size": 4}]
+    metadata.write(mdir, metadata.build("org/imported", "main", "shaimp", files, None))
+    (mdir / "config.json").write_bytes(b"{}")  # only one of two files present
+    assert store.get_archive("org/imported") is None
+    assert jobs.import_store(b) >= 1
+    rec = store.get_archive("org/imported")
+    assert rec and rec["store_id"] == b and rec["n_downloaded"] == 1 and rec["complete"] == 0
+    assert jobs.file_status("org/imported", "config.json")["downloaded"] is True
+    assert jobs.file_status("org/imported", "w.bin")["downloaded"] is False
+    store.delete_archive("org/imported")
     store.delete_store(b)
 
 

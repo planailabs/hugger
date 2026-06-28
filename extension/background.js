@@ -58,11 +58,16 @@ async function handle(msg) {
       return await api("/api/ping");
     case "get_status":
       return await api("/api/archive/" + msg.repo_id);
-    case "archive":
-      return await api("/api/archive", {
-        method: "POST",
-        body: JSON.stringify({ repo_id: msg.repo_id, revision: msg.revision || "main" }),
-      });
+    case "get_files":
+      return await api(
+        "/api/files?repo_id=" + encodeURIComponent(msg.repo_id) +
+        "&revision=" + encodeURIComponent(msg.revision || "main")
+      );
+    case "archive": {
+      const payload = { repo_id: msg.repo_id, revision: msg.revision || "main" };
+      if (msg.files && msg.files.length) payload.files = msg.files; // selective
+      return await api("/api/archive", { method: "POST", body: JSON.stringify(payload) });
+    }
     case "status":
       return await api("/api/status/" + encodeURIComponent(msg.job_id));
     case "remove":

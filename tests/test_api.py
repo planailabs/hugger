@@ -78,7 +78,7 @@ def test_api_archives_listing():
 def test_api_archive_validation_and_start():
     cli = _setup_client()
     orig = jobs.manager.start_download
-    jobs.manager.start_download = lambda repo_id, revision="main", store_id=None: _FakeJob(repo_id)
+    jobs.manager.start_download = lambda repo_id, revision="main", store_id=None, selected=None: _FakeJob(repo_id)
     try:
         h = {"Authorization": f"Bearer {TOKEN}"}
         assert cli.post("/api/archive", json={}, headers=h).status_code == 400
@@ -243,7 +243,7 @@ def test_archive_ui_requires_csrf():
     _login(cli)
     started = {"n": 0}
     orig = jobs.manager.start_download
-    jobs.manager.start_download = lambda repo_id, revision="main", store_id=None: started.__setitem__("n", started["n"] + 1) or _FakeJob(repo_id)
+    jobs.manager.start_download = lambda repo_id, revision="main", store_id=None, selected=None: started.__setitem__("n", started["n"] + 1) or _FakeJob(repo_id)
     try:
         cli.post("/ui/archive", data={"repo_id": "org/x"})  # no csrf
         assert started["n"] == 0

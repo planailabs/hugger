@@ -15,7 +15,7 @@ _TMP = tempfile.mkdtemp(prefix="hugger-live-")
 os.environ["HUGGER_HOME"] = _TMP
 os.environ["HUGGER_ARCHIVE_DIR"] = str(Path(_TMP) / "archives")
 
-from hugger import hub  # noqa: E402
+from hugger import hub, store, jobs  # noqa: E402
 
 # A very small public model used for a real end-to-end download.
 TINY = "56m/Dumb"
@@ -64,6 +64,26 @@ def test_live_download():
     # something with actual weight bytes landed too
     files = [p.name for p in dest.rglob("*") if p.is_file() and not p.name.startswith(".")]
     assert len(files) >= 2, f"expected multiple files, got {files}"
+
+
+def test_live_selective_download():
+    if not ONLINE:
+        return _skip("test_live_selective_download")
+    import time
+    from pathlib import Path
+    sid = store.ensure_default_store(str(Path(_TMP) / "archives"))
+    job = jobs.manager.start_download(TINY, store_id=sid, selected=["config.json"])
+    for _ in range(180):
+        if jobs.manager.get(job.id).status in ("done", "error"):
+            break
+        time.sleep(0.5)
+    j = jobs.manager.get(job.id)
+    assert j.status == "done", j.error
+    dest = jobs.store_repo_path(store.get_store(sid)["path"], TINY)
+    assert (dest / "config.json").exists()
+    assert not (dest / "model.safetensors").exists()  # not selected
+    assert jobs.file_status(TINY, "config.json")["downloaded"] is True
+    assert jobs.file_status(TINY, "model.safetensors")["downloaded"] is False
 
 
 if __name__ == "__main__":

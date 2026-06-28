@@ -76,12 +76,24 @@ In-progress downloads are persisted, so if the server restarts mid-download they
 ### Data stores
 
 Models can be archived to multiple **data stores** (directories). The **default**
-store lives in `~/.hugger/archives`; add more under **Stores**, pick which store a
-download targets, set a new default, and **move** an archived model between stores.
-Moves run as their own jobs (they're large). Both download and move jobs can be
-**paused/resumed** and **auto-resume after a restart** — downloads run in a
-subprocess that's terminated on pause (huggingface_hub resumes the partial), and
-moves copy file-by-file, skipping what's already there.
+store lives in `~/.hugger/archives`; add more under **Stores** (each is checked
+writable on creation), pick which store a download targets, set a new default, and
+**move** an archived model between stores. Moves run as their own jobs (they're
+large). Both download and move jobs can be **paused/resumed** and **auto-resume
+after a restart** — downloads run in a subprocess that's terminated on pause
+(huggingface_hub resumes the partial), and moves copy file-by-file (so partial
+models move and moves resume).
+
+Other store features:
+
+- **Selective download** — archiving shows a file picker ("Download all" or pick
+  files); the extension can archive all, archive selected, or grab a single file.
+- **Disk-space check** — before a download/move, the target store must have room,
+  counting other queued/running jobs so concurrent jobs can't overrun.
+- **Metadata is a file** — each model dir has a `.hugger.json` (repo, sha,
+  selected files + sizes) that is the source of truth; the DB is a rebuildable
+  cache. **Import** a store to scan its folder and rebuild the catalog. Whether a
+  file is downloaded is read from the filesystem (`GET /api/file-status`).
 
 ### Configuration (env vars)
 
@@ -158,6 +170,13 @@ All `/api/*` routes require `Authorization: Bearer <token>`.
 | `GET` | `/api/archives` | `{archives: [...]}` |
 | `GET` | `/api/archive/{repo_id}` | `{archived, sha?, size_bytes?, update_available?}` |
 | `DELETE` | `/api/archive/{repo_id}` | `{ok, repo_id}` |
+| `GET` | `/api/files?repo_id=&revision=` | `{sha, files:[{path,size,downloaded}]}` |
+| `GET` | `/api/file-status?repo_id=&path=` | `{archived, downloaded}` (FS-checked) |
+| `GET` | `/api/stores` | `{stores:[...]}` |
+| `POST` | `/api/stores/{id}/import` | `{ok, imported}` |
+| `POST` | `/api/jobs/{id}/pause` · `/resume` | `{ok}` |
+
+`POST /api/archive` accepts an optional `files: [paths]` (selective) and `store_id`.
 
 ## Tests
 

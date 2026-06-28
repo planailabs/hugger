@@ -89,7 +89,7 @@ pkgs.testers.runNixOSTest {
         "--data 'new=Sup3rSecret1&confirm=Sup3rSecret1' "
         "http://127.0.0.1:7860/change-password"
     )
-    machine.succeed("curl -sS -b /tmp/jar http://127.0.0.1:7860/ | grep -q 'Archived models'")
+    machine.succeed("curl -sS -b /tmp/jar http://127.0.0.1:7860/ | grep -q 'Recent activity'")
 
     # Old (generated) password should no longer work.
     bad = machine.succeed(

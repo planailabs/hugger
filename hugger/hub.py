@@ -66,11 +66,21 @@ def remote_sha(repo_id: str, revision: str = "main") -> str:
     return _api().model_info(repo_id, revision=revision).sha
 
 
-def download(repo_id: str, revision: str, dest: Path) -> str:
-    """Download the full repo snapshot into `dest`. Returns the path."""
+def repo_files(repo_id: str, revision: str = "main") -> dict:
+    """Commit sha + the repo's files with sizes — for the download file picker."""
+    info = _api().model_info(repo_id, revision=revision, files_metadata=True)
+    files = [{"path": s.rfilename, "size": (s.size or 0)} for s in (info.siblings or [])]
+    return {"sha": info.sha, "files": files}
+
+
+def download(repo_id: str, revision: str, dest: Path,
+             allow_patterns: list[str] | None = None) -> str:
+    """Download a repo snapshot into `dest`. If allow_patterns is given, only
+    those files are fetched (resumable, skips already-complete files)."""
     return snapshot_download(
         repo_id=repo_id,
         revision=revision,
         local_dir=str(dest),
         token=current_hf_token(),
+        allow_patterns=allow_patterns,
     )

@@ -17,7 +17,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import JSONResponse
 
-from . import auth, hub, jobs, store
+from . import auth, hub, jobs, metadata, store, util
 from .config import ARCHIVE_DIR, cfg
 from .hub import search_models
 
@@ -190,11 +190,11 @@ def search_results(models: list[dict]):
                 Td(f"♥ {m['likes']}", cls="muted"),
                 Td(
                     Button(
-                        "⤓ Archive",
-                        hx_post="/ui/archive",
+                        "⤓ Archive…",
+                        hx_get="/ui/files",
                         hx_vals=json.dumps({"repo_id": m["id"]}),
                         hx_include="#target-store",
-                        hx_target="#jobs",
+                        hx_target="#picker",
                         hx_swap="innerHTML",
                     )
                 ),
@@ -210,7 +210,7 @@ def _job_verb(j) -> str:
     return "move" if j.type == "move" else "download"
 
 
-def jobs_fragment():
+def jobs_fragment(notice: str | None = None):
     active = jobs.manager.active()
     finished = [j for j in jobs.manager.recent() if j.status in ("done", "error")]
     items = []
@@ -243,6 +243,8 @@ def jobs_fragment():
     # Poll while anything is running; paused jobs don't need polling.
     poll = "load, every 1s" if any(j.status in ("queued", "running") for j in active) else "none"
     inner = items or [P("No active jobs.", cls="muted")]
+    if notice:
+        inner = [P(notice, cls="err"), *inner]
     return Div(
         *inner,
         id="jobs",
@@ -405,11 +407,14 @@ def index(sess):
     )
     manual = Form(
         Input(type="text", name="repo_id", placeholder="org/model — archive by id"),
-        Button("⤓ Archive"),
-        hx_post="/ui/archive", hx_include="#target-store", hx_target="#jobs", hx_swap="innerHTML",
+        Button("⤓ Archive…"),
+        hx_get="/ui/files", hx_include="#target-store", hx_target="#picker", hx_swap="innerHTML",
         cls="row",
     )
-    downloads = Div(H2("Downloads"), store_selector(), manual, jobs_fragment(), cls="card")
+    downloads = Div(
+        H2("Downloads"), store_selector(), manual,
+        Div(id="picker"), jobs_fragment(), cls="card",
+    )
     blocks = []
     if hub.hf_token_source() == "none":
         blocks.append(Div(
@@ -521,13 +526,55 @@ def ui_search(req, sess, q: str = "", csrf: str = ""):
     return search_results(search_models(q))
 
 
-@rt("/ui/archive", methods=["POST"])
-def ui_archive(req, sess, repo_id: str = "", store_id: str = "", csrf: str = ""):
-    if not _guard_csrf(req, sess, csrf):
-        return Div(P("Session expired, reload the page.", cls="err"), id="jobs")
+@rt("/ui/files", methods=["GET"])
+def ui_files(req, sess, repo_id: str = "", store_id: str = ""):
     repo_id = repo_id.strip()
+    if not repo_id:
+        return Div(id="picker")
+    try:
+        info = hub.repo_files(repo_id)
+    except Exception as e:
+        return Div(P(f"Could not list files for {repo_id}: {e}", cls="err"), id="picker")
+    rec = store.get_archive(repo_id)
+    meta = metadata.read(rec["path"]) if rec else None
+    rows = []
+    for f in info["files"]:
+        have = bool(meta) and metadata.file_downloaded(rec["path"], f["path"], f["size"])
+        rows.append(Tr(
+            Td(Input(type="checkbox", name="files", value=f["path"], checked=True)),
+            Td(f["path"], cls="mono"),
+            Td(human_size(f["size"]), cls="muted"),
+            Td(Span("✓ downloaded", cls="badge current") if have else "", cls="muted"),
+        ))
+    form = Form(
+        Input(type="hidden", name="repo_id", value=repo_id),
+        Input(type="hidden", name="store_id", value=store_id),
+        Table(Thead(Tr(Th(""), Th("File"), Th("Size"), Th(""))), Tbody(*rows)),
+        Div(
+            Button("⤓ Download all", name="mode", value="all"),
+            Button("⤓ Download selected", name="mode", value="selected", cls="ghost"),
+            cls="row",
+        ),
+        hx_post="/ui/archive", hx_target="#jobs", hx_swap="outerHTML",
+    )
+    return Div(H3(f"Files in {repo_id}"), form, id="picker")
+
+
+@rt("/ui/archive", methods=["POST"])
+async def ui_archive(req, sess):
+    form = await req.form()
+    if not auth.csrf_ok(sess, _csrf_value(req, form.get("csrf"))):
+        return Div(P("Session expired, reload the page.", cls="err"), id="jobs")
+    repo_id = (form.get("repo_id") or "").strip()
+    store_id = (form.get("store_id") or "").strip() or None
+    selected = None if (form.get("mode") or "all") == "all" else form.getlist("files")
     if repo_id:
-        jobs.manager.start_download(repo_id, store_id=store_id or None)
+        try:
+            jobs.manager.start_download(repo_id, store_id=store_id, selected=selected)
+        except jobs.InsufficientSpace as e:
+            return jobs_fragment(notice=f"⚠️ {e}")
+        except Exception as e:
+            return jobs_fragment(notice=f"⚠️ {type(e).__name__}: {e}")
     return jobs_fragment()
 
 
@@ -536,6 +583,8 @@ def ui_move(req, sess, repo_id: str, store_id: str = "", csrf: str = ""):
     if _guard_csrf(req, sess, csrf) and store_id:
         try:
             jobs.manager.start_move(repo_id, store_id)
+        except jobs.InsufficientSpace as e:
+            return jobs_fragment(notice=f"⚠️ {e}")
         except KeyError:
             pass
     return jobs_fragment()
@@ -600,7 +649,7 @@ def ui_delete(req, sess, repo_id: str, csrf: str = ""):
 
 # --- data stores ---------------------------------------------------------
 
-def stores_fragment():
+def stores_fragment(notice: str | None = None):
     rows = []
     for s in store.list_stores():
         default_cell = (
@@ -608,22 +657,29 @@ def stores_fragment():
             else Button("Make default", cls="ghost",
                         hx_post=f"/ui/stores/{s['id']}/default", hx_target="#stores", hx_swap="outerHTML")
         )
+        try:
+            free = util.human_size(util.free_space(s["path"]))
+        except Exception:
+            free = "—"
+        actions = [
+            Button("Import", cls="ghost",
+                   hx_post=f"/ui/stores/{s['id']}/import", hx_target="#stores", hx_swap="outerHTML"),
+        ]
         # A store can be deleted only when it's non-default and empty.
-        if s["is_default"] or s["n_models"]:
-            del_cell = Span("", cls="muted")
-        else:
-            del_cell = Button("Delete", cls="danger",
-                              hx_post=f"/ui/stores/{s['id']}/delete", hx_target="#stores", hx_swap="outerHTML",
-                              hx_confirm=f"Remove store '{s['name']}'? (files on disk are left untouched)")
+        if not s["is_default"] and not s["n_models"]:
+            actions.append(Button("Delete", cls="danger",
+                                  hx_post=f"/ui/stores/{s['id']}/delete", hx_target="#stores", hx_swap="outerHTML",
+                                  hx_confirm=f"Remove store '{s['name']}'? (files on disk are left untouched)"))
         rows.append(Tr(
             Td(s["name"]),
             Td(s["path"], cls="mono muted"),
             Td(f"{s['n_models']}", cls="muted"),
+            Td(free, cls="muted"),
             Td(default_cell),
-            Td(del_cell),
+            Td(Div(*actions, cls="row")),
         ))
     table = Table(
-        Thead(Tr(Th("Name"), Th("Path"), Th("Models"), Th("Default"), Th(""))),
+        Thead(Tr(Th("Name"), Th("Path"), Th("Models"), Th("Free"), Th("Default"), Th(""))),
         Tbody(*rows),
     )
     add = Form(
@@ -633,7 +689,13 @@ def stores_fragment():
         hx_post="/ui/stores/add", hx_target="#stores", hx_swap="outerHTML",
         cls="row",
     )
-    return Div(H2("Data stores"), table, add, id="stores")
+    head = [H2("Data stores")]
+    if notice:
+        head.append(P(notice, cls="muted"))
+    return Div(*head, table, add,
+               P("Import scans a store's folder and rebuilds the catalog from each "
+                 "model's .hugger.json.", cls="muted"),
+               id="stores")
 
 
 @rt("/stores")
@@ -645,8 +707,23 @@ def stores_page(sess):
 def ui_store_add(req, sess, name: str = "", path: str = "", csrf: str = ""):
     if _guard_csrf(req, sess, csrf) and name.strip() and path.strip():
         from pathlib import Path as _P
-        _P(path).mkdir(parents=True, exist_ok=True)
-        store.add_store(name.strip(), str(_P(path)))
+        p = str(_P(path).expanduser())
+        try:
+            util.check_writable(p)  # creates the dir and verifies it's writable
+        except OSError as e:
+            return stores_fragment(notice=f"⚠️ {path} is not writable: {e}")
+        store.add_store(name.strip(), p)
+    return stores_fragment()
+
+
+@rt("/ui/stores/{store_id}/import", methods=["POST"])
+def ui_store_import(req, sess, store_id: str, csrf: str = ""):
+    if _guard_csrf(req, sess, csrf):
+        try:
+            n = jobs.import_store(store_id)
+            return stores_fragment(notice=f"Imported {n} model(s).")
+        except KeyError:
+            pass
     return stores_fragment()
 
 
@@ -765,8 +842,51 @@ async def api_archive(req):
         return JSONResponse({"error": "repo_id required"}, status_code=400)
     revision = (body.get("revision") or "main").strip()
     store_id = (body.get("store_id") or "").strip() or None
-    job = jobs.manager.start_download(repo_id, revision, store_id=store_id)
+    files = body.get("files") or None  # optional list of paths -> selective download
+    if isinstance(files, str):
+        files = [files]
+    try:
+        job = jobs.manager.start_download(repo_id, revision, store_id=store_id, selected=files)
+    except jobs.InsufficientSpace as e:
+        return JSONResponse({"error": str(e)}, status_code=507)
     return JSONResponse({"job_id": job.id, "repo_id": repo_id})
+
+
+@rt("/api/files", methods=["GET"])
+def api_files(req):
+    """List a repo's files with sizes + whether each is already downloaded."""
+    repo_id = (req.query_params.get("repo_id") or "").strip()
+    revision = (req.query_params.get("revision") or "main").strip()
+    if not repo_id:
+        return JSONResponse({"error": "repo_id required"}, status_code=400)
+    try:
+        info = hub.repo_files(repo_id, revision)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
+    rec = store.get_archive(repo_id)
+    out = []
+    for f in info["files"]:
+        downloaded = bool(rec) and metadata.file_downloaded(rec["path"], f["path"], f["size"])
+        out.append({"path": f["path"], "size": f["size"], "downloaded": downloaded})
+    return JSONResponse({"repo_id": repo_id, "sha": info["sha"], "files": out})
+
+
+@rt("/api/file-status", methods=["GET"])
+def api_file_status(req):
+    repo_id = (req.query_params.get("repo_id") or "").strip()
+    path = (req.query_params.get("path") or "").strip()
+    if not repo_id or not path:
+        return JSONResponse({"error": "repo_id and path required"}, status_code=400)
+    return JSONResponse(jobs.file_status(repo_id, path))
+
+
+@rt("/api/stores/{store_id}/import", methods=["POST"])
+def api_store_import(req):
+    try:
+        n = jobs.import_store(req.path_params["store_id"])
+    except KeyError:
+        return JSONResponse({"error": "store not found"}, status_code=404)
+    return JSONResponse({"ok": True, "imported": n})
 
 
 @rt("/api/status/{job_id}", methods=["GET"])
