@@ -13,6 +13,13 @@
         python = pkgs.python313;
       in
       {
+        packages.default = pkgs.python3Packages.callPackage ./nixos/package.nix { };
+
+        # VM integration test (Linux only — it boots a NixOS guest).
+        checks = nixpkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          vm = import ./nixos/test.nix { inherit pkgs self; };
+        };
+
         # `nix develop` — Python deps are managed by uv against this pinned
         # interpreter (uv won't download its own Python).
         devShells.default = pkgs.mkShell {
@@ -47,5 +54,7 @@
             exec uv run hugger
           '');
         };
-      });
+      }) // {
+      nixosModules.default = import ./nixos/module.nix;
+    };
 }
