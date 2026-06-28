@@ -30,8 +30,17 @@ def build(repo_id: str, revision: str, sha: str, files: list[dict],
         "archived_at": datetime.now(timezone.utc).isoformat(),
         "total_size": sum(f.get("size", 0) or 0 for f in chosen),
         "selected": [f["path"] for f in chosen],
-        "files": [{"path": f["path"], "size": f.get("size", 0) or 0} for f in chosen],
+        "files": [
+            {"path": f["path"], "size": f.get("size", 0) or 0,
+             "lfs": bool(f.get("lfs")), "rhash": f.get("rhash")}
+            for f in chosen
+        ],
     }
+
+
+def algo_for(file_meta: dict) -> str:
+    """Hash algorithm matching the Hub's hash for this file."""
+    return "sha256" if file_meta.get("lfs") else "gitblob"
 
 
 def write(model_dir: Path | str, meta: dict) -> None:

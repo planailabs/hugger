@@ -31,6 +31,12 @@ class InsufficientSpace(Exception):
     pass
 
 
+class Busy(Exception):
+    """Raised when an operation conflicts with an in-flight job (e.g. moving a
+    model whose download is still running)."""
+    pass
+
+
 def store_repo_path(store_path: str, repo_id: str) -> Path:
     return Path(store_path).joinpath(*repo_id.split("/"))
 
@@ -111,6 +117,9 @@ class JobManager:
         already = metadata.state(dest, meta)["downloaded_bytes"] if dest.exists() else 0
         self._ensure_space(st, max(0, meta["total_size"] - already))
         metadata.write(dest, meta)
+        # Record a (possibly partial) archive row up front so the model is
+        # immediately visible/manageable/movable even before the download finishes.
+        self._cache_archive(repo_id, meta, dest, st["id"])
 
         job = Job(id=uuid.uuid4().hex[:12], repo_id=repo_id, revision=revision,
                   type="download", store_id=st["id"], total_bytes=meta["total_size"],
@@ -118,13 +127,25 @@ class JobManager:
         self._register_and_run(job)
         return job
 
+    def _active_download_for(self, repo_id: str) -> Job | None:
+        for j in self._jobs.values():
+            if j.type == "download" and j.repo_id == repo_id and j.status in ("queued", "running", "paused"):
+                return j
+        return None
+
     def start_move(self, repo_id: str, dest_store_id: str) -> Job:
+        # Edge case: a download for this model is in flight.
+        dl = self._active_download_for(repo_id)
+        if dl and dl.status in ("queued", "running"):
+            raise Busy("pause the download before moving this model")
         rec = store.get_archive(repo_id)
         if not rec:
             raise KeyError(repo_id)
         st = store.get_store(dest_store_id)
         if not st:
             raise RuntimeError("destination store not found")
+        if st["id"] == rec["store_id"]:
+            raise Busy("model is already in that store")
         util.check_writable(st["path"])
         self._ensure_space(st, rec["size_bytes"] or 0)
         job = Job(id=uuid.uuid4().hex[:12], repo_id=repo_id, revision=rec["revision"],
@@ -234,6 +255,14 @@ class JobManager:
                 self._cache_archive(job.repo_id, meta, dest, job.store_id)
                 state = metadata.state(dest, meta)
                 job.done_bytes = state["downloaded_bytes"]
+                # Cache hashes of the freshly downloaded files so later update
+                # verification is cheap (best-effort).
+                for f in meta.get("files", []):
+                    if metadata.file_downloaded(dest, f["path"], f.get("size")):
+                        try:
+                            self.local_hash(job.repo_id, f["path"], dest, metadata.algo_for(f))
+                        except OSError:
+                            pass
                 job.status = "done"; job.persist()
             elif job._stop.is_set():
                 job.status = "paused"; job.persist()
@@ -283,6 +312,13 @@ class JobManager:
             meta = metadata.read(dest) or {}
             self._cache_archive(job.repo_id, meta, dest, job.store_id, fallback=rec)
             shutil.rmtree(src, ignore_errors=True)
+            # If a paused download for this model was moved, retarget it so an
+            # unpause resumes into the destination store (its partial + metadata
+            # are now there).
+            dl = self._active_download_for(job.repo_id)
+            if dl and dl.status == "paused":
+                dl.store_id = job.store_id
+                dl.persist()
             job.status = "done"; job.persist()
         except Exception as e:
             job.status = "error"; job.error = f"{type(e).__name__}: {e}"; job.persist()
@@ -300,6 +336,83 @@ class JobManager:
             store.upsert_archive(repo_id, fallback["revision"], fallback["sha"], str(dest),
                                  _dir_size(dest), store_id)
 
+    # --- hashing / verification ------------------------------------------
+    def local_hash(self, repo_id: str, rel: str, model_dir: Path, algo: str) -> str:
+        """Hash of a local file, cached in the DB keyed by (repo_id, path) and
+        invalidated when size/mtime change."""
+        f = Path(model_dir) / rel
+        st = f.stat()
+        cached = store.get_file_hash(repo_id, rel)
+        if (cached and cached["algo"] == algo and cached["size"] == st.st_size
+                and abs(cached["mtime"] - st.st_mtime) < 1e-6):
+            return cached["hash"]
+        h = util.hash_file(f, algo)
+        store.set_file_hash(repo_id, rel, st.st_size, st.st_mtime, algo, h)
+        return h
+
+    def verify(self, repo_id: str, revision: str | None = None) -> dict:
+        """Compare the local archive against the (latest) revision on the Hub.
+        Size is checked first (cheap), then the hash (cached). Returns per-file
+        status: missing | changed | unchanged."""
+        rec = store.get_archive(repo_id)
+        if not rec:
+            raise KeyError(repo_id)
+        model_dir = Path(rec["path"])
+        info = hub.repo_files(repo_id, revision or rec["revision"])
+        files, changed, missing = [], [], []
+        for f in info["files"]:
+            local = model_dir / f["path"]
+            if not local.exists():
+                status = "missing"; missing.append(f["path"])
+            elif local.stat().st_size != f["size"]:
+                status = "changed"; changed.append(f["path"])
+            else:
+                algo = "sha256" if f["lfs"] else "gitblob"
+                same = bool(f["rhash"]) and self.local_hash(repo_id, f["path"], model_dir, algo) == f["rhash"]
+                status = "unchanged" if same else "changed"
+                if not same:
+                    changed.append(f["path"])
+            files.append({"path": f["path"], "size": f["size"], "status": status})
+        # Were all of the repo's files previously downloaded? (offer "all" then)
+        all_present = not missing and all(
+            (model_dir / f["path"]).exists() for f in info["files"]
+        )
+        return {
+            "repo_id": repo_id, "sha": info["sha"], "files": files,
+            "changed": changed, "missing": missing, "all_present": all_present,
+        }
+
+    # --- file management --------------------------------------------------
+    def update_selected(self, job_id: str, selected: list[str]) -> None:
+        """Change which files a *paused* download will fetch."""
+        job = self._jobs.get(job_id)
+        if not job or job.type != "download" or job.status != "paused":
+            return
+        st = store.get_store(job.store_id)
+        if not st:
+            return
+        dest = store_repo_path(st["path"], job.repo_id)
+        info = hub.repo_files(job.repo_id, job.revision)
+        meta = metadata.build(job.repo_id, job.revision, info["sha"], info["files"], selected)
+        metadata.write(dest, meta)
+        job.total_bytes = meta["total_size"]
+        job.done_bytes = metadata.state(dest, meta)["downloaded_bytes"]
+        job.persist()
+        self._cache_archive(job.repo_id, meta, dest, job.store_id)
+
+    def remove_file(self, repo_id: str, rel: str) -> None:
+        rec = store.get_archive(repo_id)
+        if not rec:
+            return
+        model_dir = Path(rec["path"])
+        target = (model_dir / rel)
+        if target.is_file():
+            target.unlink()
+        store.delete_file_hash(repo_id, rel)
+        meta = metadata.read(model_dir)
+        if meta:
+            self._cache_archive(repo_id, meta, model_dir, rec["store_id"])
+
 
 manager = JobManager()
 
@@ -308,7 +421,7 @@ def delete_archive(repo_id: str) -> None:
     rec = store.get_archive(repo_id)
     if rec:
         shutil.rmtree(rec["path"], ignore_errors=True)
-    store.delete_archive(repo_id)
+    store.delete_archive_and_hashes(repo_id)
 
 
 def check_update(repo_id: str) -> dict:

@@ -216,13 +216,18 @@ def jobs_fragment(notice: str | None = None):
     items = []
     for j in active:
         kind = "⇄ move" if j.type == "move" else "⤓ download"
+        controls = []
         if j.status == "paused":
-            ctrl = Button("Resume", cls="ghost", hx_post=f"/ui/jobs/{j.id}/resume",
-                          hx_target="#jobs", hx_swap="outerHTML")
+            controls.append(Button("Resume", cls="ghost", hx_post=f"/ui/jobs/{j.id}/resume",
+                                   hx_target="#jobs", hx_swap="outerHTML"))
+            if j.type == "download":  # only paused downloads can re-pick files
+                controls.append(Button("Edit files", cls="ghost",
+                                       hx_get=f"/ui/jobs/{j.id}/files",
+                                       hx_target="#picker", hx_swap="innerHTML"))
             state = Span(" paused", cls="muted")
         else:
-            ctrl = Button("Pause", cls="ghost", hx_post=f"/ui/jobs/{j.id}/pause",
-                          hx_target="#jobs", hx_swap="outerHTML")
+            controls.append(Button("Pause", cls="ghost", hx_post=f"/ui/jobs/{j.id}/pause",
+                                   hx_target="#jobs", hx_swap="outerHTML"))
             state = Span(f" {j.percent}%", cls="muted")
         items.append(
             Div(
@@ -230,7 +235,7 @@ def jobs_fragment(notice: str | None = None):
                 Progress(value=str(j.done_bytes), max=str(max(j.total_bytes, 1))),
                 Div(
                     Span(f"{human_size(j.done_bytes)} / {human_size(j.total_bytes)}", cls="muted"),
-                    ctrl, cls="row",
+                    *controls, cls="row",
                 ),
                 cls="job",
             )
@@ -290,8 +295,13 @@ def archives_fragment():
                 Td(
                     Div(
                         _move_control(a["repo_id"], a.get("store_id"), stores),
-                        Button("Check", cls="ghost",
-                               hx_post=f"/ui/check/{a['repo_id']}", hx_target="#archives", hx_swap="outerHTML"),
+                        Button("Manage", cls="ghost",
+                               hx_get=f"/ui/manage/{a['repo_id']}", hx_target="#picker", hx_swap="innerHTML"),
+                        (Button("Update…", hx_get=f"/ui/update/{a['repo_id']}",
+                                hx_target="#picker", hx_swap="innerHTML")
+                         if a["update_available"] else
+                         Button("Check", cls="ghost",
+                                hx_post=f"/ui/check/{a['repo_id']}", hx_target="#archives", hx_swap="outerHTML")),
                         Button("Delete", cls="danger",
                                hx_post=f"/ui/delete/{a['repo_id']}", hx_target="#archives", hx_swap="outerHTML",
                                hx_confirm=f"Delete archive {a['repo_id']} from disk?"),
@@ -434,6 +444,7 @@ def archives_page(sess):
     # their progress is visible right here.
     return page(
         Div(archives_fragment(), cls="card"),
+        Div(id="picker"),  # manage / edit-files / update panels render here
         Div(H2("Jobs"), jobs_fragment(), cls="card"),
         sess=sess,
     )
@@ -590,7 +601,7 @@ def ui_move(req, sess, repo_id: str, store_id: str = "", csrf: str = ""):
     if _guard_csrf(req, sess, csrf) and store_id:
         try:
             jobs.manager.start_move(repo_id, store_id)
-        except jobs.InsufficientSpace as e:
+        except (jobs.InsufficientSpace, jobs.Busy) as e:
             return jobs_fragment(notice=f"⚠️ {e}")
         except KeyError:
             pass
@@ -608,6 +619,145 @@ def ui_job_pause(req, sess, job_id: str, csrf: str = ""):
 def ui_job_resume(req, sess, job_id: str, csrf: str = ""):
     if _guard_csrf(req, sess, csrf):
         jobs.manager.resume(job_id)
+    return jobs_fragment()
+
+
+@rt("/ui/jobs/{job_id}/files", methods=["GET"])
+def ui_job_files(req, sess, job_id: str):
+    job = jobs.manager.get(job_id)
+    if not job or job.type != "download":
+        return Div(id="picker")
+    try:
+        info = hub.repo_files(job.repo_id, job.revision)
+    except Exception as e:
+        return Div(P(f"Could not list files: {e}", cls="err"), id="picker")
+    st = store.get_store(job.store_id)
+    meta = metadata.read(jobs.store_repo_path(st["path"], job.repo_id)) if st else None
+    selected = set(meta["selected"]) if meta else {f["path"] for f in info["files"]}
+    rows = [
+        Tr(Td(Input(type="checkbox", name="files", value=f["path"], checked=f["path"] in selected)),
+           Td(f["path"], cls="mono"), Td(human_size(f["size"]), cls="muted"))
+        for f in info["files"]
+    ]
+    form = Form(
+        Table(Thead(Tr(Th(""), Th("File"), Th("Size"))), Tbody(*rows)),
+        Button("Save selection"),
+        hx_post=f"/ui/jobs/{job_id}/files", hx_target="#jobs", hx_swap="outerHTML",
+    )
+    return Div(H3(f"Files for paused download {job.repo_id}"), form, id="picker")
+
+
+@rt("/ui/jobs/{job_id}/files", methods=["POST"])
+async def ui_job_files_save(req, sess):
+    form = await req.form()
+    if auth.csrf_ok(sess, _csrf_value(req, form.get("csrf"))):
+        jobs.manager.update_selected(req.path_params["job_id"], form.getlist("files"))
+    return jobs_fragment()
+
+
+@rt("/ui/manage/{repo_id:path}", methods=["GET"])
+def ui_manage(req, sess, repo_id: str):
+    rec = store.get_archive(repo_id)
+    if not rec:
+        return Div(P("Not archived.", cls="muted"), id="picker")
+    try:
+        info = hub.repo_files(repo_id, rec["revision"])
+    except Exception as e:
+        return Div(P(f"Could not list files: {e}", cls="err"), id="picker")
+    model_dir = rec["path"]
+    rows = []
+    for f in info["files"]:
+        have = metadata.file_downloaded(model_dir, f["path"], f["size"])
+        actions = (
+            Button("Remove", cls="danger", hx_post=f"/ui/file-remove/{repo_id}",
+                   hx_vals=json.dumps({"path": f["path"]}), hx_target="#picker", hx_swap="innerHTML")
+            if have else ""
+        )
+        rows.append(Tr(
+            Td(Input(type="checkbox", name="files", value=f["path"], checked=not have)),
+            Td(f["path"], cls="mono"),
+            Td(human_size(f["size"]), cls="muted"),
+            Td(Span("✓ downloaded", cls="badge current") if have else Span("missing", cls="muted")),
+            Td(actions),
+        ))
+    form = Form(
+        Table(Thead(Tr(Th(""), Th("File"), Th("Size"), Th("Status"), Th(""))), Tbody(*rows)),
+        Button("⤓ Download selected"),
+        hx_post=f"/ui/manage/{repo_id}", hx_target="#jobs", hx_swap="outerHTML",
+    )
+    return Div(H3(f"Manage {repo_id}"), P(f"Store: {rec.get('store_name') or '—'}", cls="muted"),
+               form, id="picker")
+
+
+@rt("/ui/manage/{repo_id:path}", methods=["POST"])
+async def ui_manage_download(req, sess):
+    form = await req.form()
+    repo_id = req.path_params["repo_id"]
+    if auth.csrf_ok(sess, _csrf_value(req, form.get("csrf"))):
+        files = form.getlist("files")
+        rec = store.get_archive(repo_id)
+        if files and rec:
+            try:
+                jobs.manager.start_download(repo_id, rec["revision"], store_id=rec["store_id"], selected=files)
+            except (jobs.InsufficientSpace, jobs.Busy) as e:
+                return jobs_fragment(notice=f"⚠️ {e}")
+    return jobs_fragment()
+
+
+@rt("/ui/file-remove/{repo_id:path}", methods=["POST"])
+async def ui_file_remove(req, sess):
+    form = await req.form()
+    repo_id = req.path_params["repo_id"]
+    if auth.csrf_ok(sess, _csrf_value(req, form.get("csrf"))):
+        path = form.get("path")
+        if path:
+            jobs.manager.remove_file(repo_id, path)
+    return ui_manage(req, sess, repo_id)
+
+
+@rt("/ui/update/{repo_id:path}", methods=["GET"])
+def ui_update(req, sess, repo_id: str):
+    try:
+        v = jobs.manager.verify(repo_id)
+    except KeyError:
+        return Div(P("Not archived.", cls="muted"), id="picker")
+    except Exception as e:
+        return Div(P(f"Verify failed: {e}", cls="err"), id="picker")
+    changed = set(v["changed"]) | set(v["missing"])
+    rows = []
+    for f in v["files"]:
+        rows.append(Tr(
+            Td(Input(type="checkbox", name="files", value=f["path"], checked=f["path"] in changed)),
+            Td(f["path"], cls="mono"),
+            Td(human_size(f["size"]), cls="muted"),
+            Td(Span(f["status"], cls="badge update" if f["status"] != "unchanged" else "badge current")),
+        ))
+    n = len(changed)
+    buttons = [Button(f"⟳ Update changed ({n})", name="mode", value="selected")]
+    if v["all_present"]:
+        buttons.append(Button("⟳ Re-download all", name="mode", value="all", cls="ghost"))
+    form = Form(
+        Input(type="hidden", name="repo_id", value=repo_id),
+        Table(Thead(Tr(Th(""), Th("File"), Th("Size"), Th("Change"))), Tbody(*rows)),
+        Div(*buttons, cls="row"),
+        hx_post=f"/ui/update/{repo_id}", hx_target="#jobs", hx_swap="outerHTML",
+    )
+    return Div(H3(f"Update {repo_id}"),
+               P(f"{n} file(s) changed or missing.", cls="muted"), form, id="picker")
+
+
+@rt("/ui/update/{repo_id:path}", methods=["POST"])
+async def ui_update_apply(req, sess):
+    form = await req.form()
+    repo_id = req.path_params["repo_id"]
+    if auth.csrf_ok(sess, _csrf_value(req, form.get("csrf"))):
+        rec = store.get_archive(repo_id)
+        if rec:
+            selected = None if (form.get("mode") or "selected") == "all" else form.getlist("files")
+            try:
+                jobs.manager.start_download(repo_id, rec["revision"], store_id=rec["store_id"], selected=selected)
+            except (jobs.InsufficientSpace, jobs.Busy) as e:
+                return jobs_fragment(notice=f"⚠️ {e}")
     return jobs_fragment()
 
 
@@ -879,6 +1029,16 @@ def api_files(req):
         downloaded = bool(rec) and metadata.file_downloaded(rec["path"], f["path"], f["size"])
         out.append({"path": f["path"], "size": f["size"], "downloaded": downloaded})
     return JSONResponse({"repo_id": repo_id, "sha": info["sha"], "files": out})
+
+
+@rt("/api/verify/{repo_id:path}", methods=["GET"])
+def api_verify(req):
+    try:
+        return JSONResponse(jobs.manager.verify(req.path_params["repo_id"]))
+    except KeyError:
+        return JSONResponse({"error": "not archived"}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
 
 
 @rt("/api/file-status", methods=["GET"])

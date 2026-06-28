@@ -245,6 +245,95 @@ def test_import_store_and_file_status():
     store.delete_store(b)
 
 
+def test_verify_and_hash_cache():
+    a = store.ensure_default_store(str(Path(_TMP) / "archives"))
+    repo = "org/verify"
+    mdir = jobs.store_repo_path(store.get_store(a)["path"], repo)
+    mdir.mkdir(parents=True, exist_ok=True)
+    (mdir / "config.json").write_bytes(b"hello")
+    (mdir / "keep.bin").write_bytes(b"abc")
+    files = [
+        {"path": "config.json", "size": 5, "lfs": False, "rhash": util.gitblob_sha1(mdir / "config.json")},
+        {"path": "keep.bin", "size": 3, "lfs": False, "rhash": util.gitblob_sha1(mdir / "keep.bin")},
+    ]
+    metadata.write(mdir, metadata.build(repo, "main", "sha", files, None))
+    store.upsert_archive(repo, "main", "sha", str(mdir), 8, a, total_bytes=8, n_files=2, n_downloaded=2)
+    # remote: config.json changed, keep.bin same, new.bin missing locally
+    new = [
+        {"path": "config.json", "size": 5, "lfs": False, "rhash": "DIFFERENT"},
+        {"path": "keep.bin", "size": 3, "lfs": False, "rhash": util.gitblob_sha1(mdir / "keep.bin")},
+        {"path": "new.bin", "size": 10, "lfs": False, "rhash": "x"},
+    ]
+    orig = jobs.hub.repo_files
+    jobs.hub.repo_files = lambda r, rev="main": {"sha": "newsha", "files": new}
+    try:
+        v = jobs.manager.verify(repo)
+        statuses = {f["path"]: f["status"] for f in v["files"]}
+        assert statuses == {"config.json": "changed", "keep.bin": "unchanged", "new.bin": "missing"}
+        assert set(v["changed"]) == {"config.json"} and v["missing"] == ["new.bin"]
+        assert v["all_present"] is False
+        assert store.get_file_hash(repo, "keep.bin") is not None  # hash cached during verify
+    finally:
+        jobs.hub.repo_files = orig
+        store.delete_archive_and_hashes(repo)
+
+
+def test_start_move_busy_when_running_download():
+    a = store.get_default_store()["id"]
+    b = store.add_store("busy", str(Path(_TMP) / "busy"))
+    store.upsert_archive("org/busy", "main", "s", str(Path(_TMP) / "x"), 1, a)
+    j = jobs.Job(id="dl1", repo_id="org/busy", type="download", status="running", store_id=a)
+    jobs.manager._jobs["dl1"] = j
+    try:
+        raised = False
+        try:
+            jobs.manager.start_move("org/busy", b)
+        except jobs.Busy:
+            raised = True
+        assert raised
+    finally:
+        jobs.manager._jobs.pop("dl1", None)
+        store.delete_archive_and_hashes("org/busy")
+        store.delete_store(b)
+
+
+def test_update_selected_while_paused():
+    a = store.get_default_store()["id"]
+    repo = "org/sel"
+    mdir = jobs.store_repo_path(store.get_store(a)["path"], repo)
+    metadata.write(mdir, metadata.build(repo, "main", "s", [{"path": "a", "size": 1}, {"path": "b", "size": 2}], ["a"]))
+    store.upsert_archive(repo, "main", "s", str(mdir), 0, a, total_bytes=1, n_files=1, complete=False)
+    j = jobs.Job(id="pj", repo_id=repo, type="download", status="paused", store_id=a, total_bytes=1)
+    jobs.manager._jobs["pj"] = j
+    orig = jobs.hub.repo_files
+    jobs.hub.repo_files = lambda r, rev="main": {"sha": "s", "files": [{"path": "a", "size": 1}, {"path": "b", "size": 2}]}
+    try:
+        jobs.manager.update_selected("pj", ["a", "b"])
+        meta = metadata.read(mdir)
+        assert set(meta["selected"]) == {"a", "b"} and meta["total_size"] == 3
+        assert jobs.manager.get("pj").total_bytes == 3
+    finally:
+        jobs.hub.repo_files = orig
+        jobs.manager._jobs.pop("pj", None)
+        store.delete_archive_and_hashes(repo)
+
+
+def test_remove_file_updates_cache():
+    a = store.get_default_store()["id"]
+    repo = "org/rm"
+    mdir = jobs.store_repo_path(store.get_store(a)["path"], repo)
+    metadata.write(mdir, metadata.build(repo, "main", "s", [{"path": "f.bin", "size": 3}], None))
+    (mdir / "f.bin").write_bytes(b"abc")
+    store.set_file_hash(repo, "f.bin", 3, 123.0, "gitblob", "deadbeef")
+    store.upsert_archive(repo, "main", "s", str(mdir), 3, a, total_bytes=3, n_files=1, n_downloaded=1)
+    jobs.manager.remove_file(repo, "f.bin")
+    assert not (mdir / "f.bin").exists()
+    assert store.get_file_hash(repo, "f.bin") is None
+    rec = store.get_archive(repo)
+    assert rec["n_downloaded"] == 0 and rec["complete"] == 0
+    store.delete_archive_and_hashes(repo)
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

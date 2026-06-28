@@ -94,6 +94,15 @@ Other store features:
   selected files + sizes) that is the source of truth; the DB is a rebuildable
   cache. **Import** a store to scan its folder and rebuild the catalog. Whether a
   file is downloaded is read from the filesystem (`GET /api/file-status`).
+- **Manage files** — from the archives view, open **Manage** to download missing
+  files or remove individual files. A **paused** download can also be moved, and
+  its file selection edited (**Edit files**) before resuming; moving a paused
+  download retargets it so resume continues in the new store. Moving a *running*
+  download is refused until paused.
+- **Update verification** — when an update is available, **Update…** verifies each
+  file by size first, then hash (sha256 for LFS, git-blob sha1 for regular;
+  cached in the DB), and offers to re-download only the changed/missing files, or
+  all of them. (`GET /api/verify/{repo_id}`)
 
 ### Configuration (env vars)
 

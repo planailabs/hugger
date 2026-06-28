@@ -86,6 +86,25 @@ def test_live_selective_download():
     assert jobs.file_status(TINY, "model.safetensors")["downloaded"] is False
 
 
+def test_live_verify_matches_hub_hash():
+    if not ONLINE:
+        return _skip("test_live_verify_matches_hub_hash")
+    import time
+    from pathlib import Path
+    sid = store.ensure_default_store(str(Path(_TMP) / "archives"))
+    job = jobs.manager.start_download(TINY, store_id=sid, selected=["config.json"])
+    for _ in range(180):
+        if jobs.manager.get(job.id).status in ("done", "error"):
+            break
+        time.sleep(0.5)
+    assert jobs.manager.get(job.id).status == "done"
+    v = jobs.manager.verify(TINY)
+    statuses = {f["path"]: f["status"] for f in v["files"]}
+    # our git-blob sha1 of the downloaded config.json must match the Hub's blob_id
+    assert statuses["config.json"] == "unchanged", statuses
+    assert "model.safetensors" in v["missing"]  # not selected -> missing
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

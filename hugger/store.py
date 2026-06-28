@@ -243,6 +243,38 @@ def save_job(d: dict) -> None:
         )
 
 
+def delete_archive_and_hashes(repo_id: str) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute("DELETE FROM archives WHERE repo_id=?", (repo_id,))
+        conn.execute("DELETE FROM file_hashes WHERE repo_id=?", (repo_id,))
+
+
+# --- file hash cache -----------------------------------------------------
+
+def get_file_hash(repo_id: str, path: str) -> dict | None:
+    with closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT * FROM file_hashes WHERE repo_id=? AND path=?", (repo_id, path)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def set_file_hash(repo_id: str, path: str, size: int, mtime: float, algo: str, h: str) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            """INSERT INTO file_hashes (repo_id, path, size, mtime, algo, hash)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(repo_id, path) DO UPDATE SET
+                 size=excluded.size, mtime=excluded.mtime, algo=excluded.algo, hash=excluded.hash""",
+            (repo_id, path, size, mtime, algo, h),
+        )
+
+
+def delete_file_hash(repo_id: str, path: str) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute("DELETE FROM file_hashes WHERE repo_id=? AND path=?", (repo_id, path))
+
+
 def list_jobs(statuses: list[str]) -> list[dict]:
     placeholders = ",".join("?" * len(statuses))
     with closing(_connect()) as conn:
