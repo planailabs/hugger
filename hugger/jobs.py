@@ -236,10 +236,11 @@ class JobManager:
 
             env = dict(os.environ)
             env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
-            # Xet transfers don't report incremental byte progress, so default to
-            # the classic LFS path (per-chunk progress). Operators can re-enable
-            # Xet by exporting HF_HUB_DISABLE_XET=0.
-            env.setdefault("HF_HUB_DISABLE_XET", "1")
+            # Progress is synced from the hf library's own progress emitter (its
+            # tqdm bytes bar -> .hugger.progress), which works for both transfers:
+            # per-chunk on the classic LFS path, per-xorb-group on Xet. Xet stays
+            # enabled (faster); export HF_HUB_DISABLE_XET=1 to force the classic
+            # path for finer-grained progress on small files.
             proc = subprocess.Popen(
                 [sys.executable, "-m", "hugger._dlworker", job.repo_id, job.revision, str(dest)],
                 env=env,
