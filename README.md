@@ -51,7 +51,7 @@ In-progress downloads are persisted, so if the server restarts mid-download they
 | `HUGGER_HTTPS_ONLY` | `false` | Send HSTS header (enable when served over HTTPS). |
 | `HUGGER_ALLOWED_HOSTS` | `*` | Comma-separated Host allowlist (set your domain when public). |
 | `HUGGER_ALLOWED_ORIGINS` | — | CORS origins for page-context API reads (the extension doesn't need this). |
-| `HF_TOKEN` | — | HuggingFace token for gated/private repos. |
+| `HF_TOKEN` | — | HuggingFace token for gated/private repos (or set it in **Settings**, which takes precedence). |
 
 ## Exposing to the internet
 

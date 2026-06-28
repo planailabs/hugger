@@ -5,11 +5,35 @@ from pathlib import Path
 
 from huggingface_hub import HfApi, snapshot_download
 
+from . import store
 from .config import ARCHIVE_DIR, cfg
+
+_HF_TOKEN_KEY = "hf_token"
+
+
+def current_hf_token() -> str | None:
+    """Effective HF token: the one set in the UI (DB) wins, else the env var."""
+    return store.get_setting(_HF_TOKEN_KEY) or cfg.hf_token
+
+
+def set_hf_token(token: str | None) -> None:
+    if token:
+        store.set_setting(_HF_TOKEN_KEY, token)
+    else:
+        store.delete_setting(_HF_TOKEN_KEY)
+
+
+def hf_token_source() -> str:
+    """For display: where the effective token comes from."""
+    if store.get_setting(_HF_TOKEN_KEY):
+        return "ui"
+    if cfg.hf_token:
+        return "env"
+    return "none"
 
 
 def _api() -> HfApi:
-    return HfApi(token=cfg.hf_token)
+    return HfApi(token=current_hf_token())
 
 
 def search_models(query: str, limit: int = 25) -> list[dict]:
@@ -53,5 +77,5 @@ def download(repo_id: str, revision: str, dest: Path) -> str:
         repo_id=repo_id,
         revision=revision,
         local_dir=str(dest),
-        token=cfg.hf_token,
+        token=current_hf_token(),
     )

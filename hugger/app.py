@@ -17,7 +17,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import JSONResponse
 
-from . import auth, jobs, store
+from . import auth, hub, jobs, store
 from .config import ARCHIVE_DIR, cfg
 from .hub import search_models
 
@@ -471,6 +471,24 @@ def settings(sess, msg: str = ""):
              method="post", action="/settings/rotate-token"),
         cls="card",
     )
+    src = hub.hf_token_source()
+    src_label = {
+        "ui": "A token is set (saved here).",
+        "env": "Using a token from the environment (HF_TOKEN).",
+        "none": "No token set — only public models are accessible.",
+    }[src]
+    hf_card = Div(
+        H2("HuggingFace token"),
+        P("Needed to download gated or private models. ", Span(src_label, cls="muted")),
+        Form(
+            Input(type="password", name="token", placeholder="hf_… (leave blank and Clear to remove)"),
+            Button("Save token"),
+            method="post", action="/settings/hf-token",
+        ),
+        (Form(Button("Clear token", cls="danger"), method="post", action="/settings/hf-token/clear")
+         if src == "ui" else ""),
+        cls="card",
+    )
     pw_card = Div(
         H2("Change password"),
         Form(
@@ -488,7 +506,20 @@ def settings(sess, msg: str = ""):
         P("HTTPS-only mode: " + ("on" if cfg.https_only else "off"), cls="muted"),
         cls="card",
     )
-    return page(note, token_card, pw_card, info, sess=sess)
+    return page(note, token_card, hf_card, pw_card, info, sess=sess)
+
+
+@rt("/settings/hf-token", methods=["POST"])
+def settings_hf_token(token: str = ""):
+    hub.set_hf_token(token.strip() or None)
+    msg = "HF+token+saved" if token.strip() else "HF+token+cleared"
+    return RedirectResponse(f"/settings?msg={msg}", status_code=303)
+
+
+@rt("/settings/hf-token/clear", methods=["POST"])
+def settings_hf_token_clear():
+    hub.set_hf_token(None)
+    return RedirectResponse("/settings?msg=HF+token+cleared", status_code=303)
 
 
 @rt("/settings/rotate-token", methods=["POST"])

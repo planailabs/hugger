@@ -100,6 +100,11 @@ def set_setting(key: str, value: str) -> None:
         )
 
 
+def delete_setting(key: str) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute("DELETE FROM settings WHERE key=?", (key,))
+
+
 # --- jobs (persisted for restart resume) ---------------------------------
 
 def upsert_job(job_id: str, repo_id: str, revision: str, status: str,
