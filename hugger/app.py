@@ -574,6 +574,28 @@ def api_archives():
     return JSONResponse({"archives": store.list_archives()})
 
 
+@rt("/api/archive/{repo_id:path}", methods=["GET"])
+def api_archive_status(repo_id: str):
+    """Whether a specific repo is archived — used by the extension to decide
+    between offering Archive vs Remove/Update."""
+    rec = store.get_archive(repo_id)
+    if not rec:
+        return JSONResponse({"repo_id": repo_id, "archived": False})
+    return JSONResponse({
+        "repo_id": repo_id,
+        "archived": True,
+        "sha": rec["sha"],
+        "size_bytes": rec["size_bytes"],
+        "update_available": bool(rec["update_available"]),
+    })
+
+
+@rt("/api/archive/{repo_id:path}", methods=["DELETE"])
+def api_archive_delete(repo_id: str):
+    jobs.delete_archive(repo_id)
+    return JSONResponse({"ok": True, "repo_id": repo_id})
+
+
 # --- entrypoint ----------------------------------------------------------
 
 def main() -> None:

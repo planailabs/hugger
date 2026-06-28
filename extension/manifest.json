@@ -6,7 +6,16 @@
   "permissions": ["storage"],
   "host_permissions": ["http://localhost/*", "http://127.0.0.1/*"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
-  "background": { "service_worker": "background.js" },
+  "background": {
+    "service_worker": "background.js",
+    "scripts": ["defaults.js", "background.js"]
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "hugger@plan.ai",
+      "strict_min_version": "115.0"
+    }
+  },
   "action": {
     "default_title": "hugger",
     "default_popup": "popup.html"

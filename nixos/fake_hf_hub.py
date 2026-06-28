@@ -120,7 +120,20 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"error": "Repository not found"}, status=404)
             return
-        self.send_error(404, "not found")
+        if path.startswith("/api/"):
+            self.send_error(404, "not found")
+            return
+        # Anything else: a minimal HTML "model page" so the browser extension's
+        # content script runs and parses the repo id from the URL.
+        body = (
+            f"<!doctype html><html><head><title>{path.strip('/')}</title></head>"
+            f"<body><h1>{path.strip('/')}</h1><p>fake model page</p></body></html>"
+        ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
 
 def main():

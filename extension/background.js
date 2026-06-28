@@ -1,12 +1,30 @@
-// Background service worker: performs all authenticated calls to the hugger
-// server. Running here (with host_permissions) means requests are NOT subject to
-// page CORS, so the server can stay locked down and still be reachable when
-// exposed over the internet via HTTPS.
+// Background worker: performs all authenticated calls to the hugger server.
+// Running here (with host_permissions) means requests are NOT subject to page
+// CORS, so the server stays locked down and reachable when exposed over HTTPS.
+//
+// Cross-browser: Chrome loads this as a service worker (and importScripts pulls
+// in defaults.js); Firefox loads ["defaults.js", "background.js"] as event-page
+// scripts (so defaults.js already ran).
 
-const DEFAULTS = { serverUrl: "http://localhost:7860", token: "" };
+if (typeof importScripts === "function") {
+  try {
+    importScripts("defaults.js");
+  } catch (e) {
+    /* already loaded as a background script (Firefox) */
+  }
+}
+
+const DEFAULTS = (typeof self !== "undefined" && self.HUGGER_DEFAULTS) || {
+  serverUrl: "http://localhost:7860",
+  token: "",
+};
 
 async function getCfg() {
-  return chrome.storage.sync.get(DEFAULTS);
+  try {
+    return await chrome.storage.sync.get(DEFAULTS);
+  } catch (e) {
+    return DEFAULTS; // storage.sync unavailable -> fall back to baked defaults
+  }
 }
 
 async function api(path, opts = {}) {
@@ -38,6 +56,8 @@ async function handle(msg) {
   switch (msg.type) {
     case "ping":
       return await api("/api/ping");
+    case "get_status":
+      return await api("/api/archive/" + msg.repo_id);
     case "archive":
       return await api("/api/archive", {
         method: "POST",
@@ -45,6 +65,8 @@ async function handle(msg) {
       });
     case "status":
       return await api("/api/status/" + encodeURIComponent(msg.job_id));
+    case "remove":
+      return await api("/api/archive/" + msg.repo_id, { method: "DELETE" });
     default:
       throw new Error("Unknown message type: " + msg.type);
   }

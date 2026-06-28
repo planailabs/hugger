@@ -94,6 +94,28 @@ def test_api_status_not_found():
     assert r.status_code == 404
 
 
+def test_api_archive_status_and_delete():
+    cli = _setup_client()
+    h = {"Authorization": f"Bearer {TOKEN}"}
+    # unknown repo -> archived: false
+    r = cli.get("/api/archive/org/unknown-model", headers=h)
+    assert r.status_code == 200 and r.json()["archived"] is False
+    # seed one, then it reports archived
+    store.upsert_archive("org/known-model", "main", "sha1", os.path.join(_TMP, "ka"), 99)
+    r = cli.get("/api/archive/org/known-model", headers=h)
+    body = r.json()
+    assert body["archived"] is True and body["size_bytes"] == 99
+    # delete via API removes it
+    d = cli.request("DELETE", "/api/archive/org/known-model", headers=h)
+    assert d.status_code == 200 and d.json()["ok"] is True
+    assert cli.get("/api/archive/org/known-model", headers=h).json()["archived"] is False
+
+
+def test_api_archive_status_requires_token():
+    cli = _setup_client()
+    assert cli.get("/api/archive/org/x").status_code == 401
+
+
 # --- web auth / sessions -------------------------------------------------
 
 def test_root_redirects_without_session():
