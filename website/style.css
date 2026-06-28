@@ -1,0 +1,154 @@
+:root {
+  --bg: #FFF8E1;
+  --surface: #FFECB3;
+  --surface-2: #FFE082;
+  --ink: #4E342E;
+  --muted: #8D6E63;
+  --accent: #FB8C00;
+  --accent-2: #F4511E;
+  --danger: #E53935;
+  --ok: #2E7D32;
+  --radius: 14px;
+  --maxw: 1000px;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.65;
+}
+
+a { color: var(--accent-2); }
+
+/* --- top nav --- */
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: .7rem 1.2rem;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  color: #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .12);
+}
+.nav .brand { font-weight: 800; font-size: 1.15rem; display: flex; align-items: center; gap: .4rem; text-decoration: none; color: #fff; }
+.nav .links { margin-left: auto; display: flex; gap: 1.1rem; }
+.nav .links a { color: #fff; text-decoration: none; font-weight: 600; opacity: .95; }
+.nav .links a:hover { opacity: 1; text-decoration: underline; }
+
+/* --- layout --- */
+section { padding: 3.5rem 1.2rem; }
+.wrap { max-width: var(--maxw); margin: 0 auto; }
+.center { text-align: center; }
+
+/* --- hero --- */
+.hero {
+  padding-top: 4.5rem;
+  padding-bottom: 3rem;
+  background:
+    radial-gradient(900px 380px at 50% -8%, #FFFDE7 0%, rgba(255, 253, 231, 0) 70%),
+    var(--bg);
+}
+.hero .emoji {
+  font-size: clamp(5rem, 18vw, 9rem);
+  line-height: 1;
+  filter: drop-shadow(0 8px 18px rgba(244, 81, 30, .25));
+  animation: bob 4s ease-in-out infinite;
+}
+@keyframes bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+@media (prefers-reduced-motion: reduce) { .hero .emoji { animation: none; } }
+
+.hero h1 {
+  font-size: clamp(2.8rem, 8vw, 4.5rem);
+  margin: .4rem 0 .2rem;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  letter-spacing: -.02em;
+}
+.hero .tagline {
+  font-size: clamp(1.1rem, 2.6vw, 1.5rem);
+  color: var(--muted);
+  max-width: 36ch;
+  margin: .3rem auto 1.8rem;
+}
+
+/* --- buttons --- */
+.btns { display: flex; flex-wrap: wrap; gap: .8rem; justify-content: center; }
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .85rem 1.3rem;
+  border-radius: 999px;
+  font-weight: 700;
+  text-decoration: none;
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 6px 16px rgba(251, 140, 0, .35);
+  transition: transform .12s ease, background .12s ease;
+}
+.btn:hover { background: var(--accent-2); transform: translateY(-2px); }
+.btn.ghost { background: transparent; color: var(--accent-2); border: 2px solid var(--accent); box-shadow: none; }
+.btn.ghost:hover { background: var(--surface-2); }
+.btn .ico { font-size: 1.2em; }
+.subtle { color: var(--muted); font-size: .9rem; margin-top: 1rem; }
+
+/* --- cards --- */
+.grid { display: grid; gap: 1.2rem; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+.card {
+  background: var(--surface);
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius);
+  padding: 1.4rem;
+}
+.card h3 { margin: .2rem 0 .5rem; color: var(--accent-2); }
+.card .ico { font-size: 1.8rem; }
+
+.alt { background: var(--surface); }
+h2.section-title { font-size: clamp(1.6rem, 4vw, 2.2rem); margin-top: 0; }
+.lead { color: var(--muted); max-width: 60ch; }
+
+/* --- steps --- */
+.steps { counter-reset: step; display: grid; gap: 1rem; }
+.step { display: flex; gap: 1rem; align-items: flex-start; }
+.step .n {
+  counter-increment: step;
+  flex: 0 0 auto;
+  width: 2rem; height: 2rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff; font-weight: 800;
+  display: grid; place-items: center;
+}
+.step .n::before { content: counter(step); }
+
+/* --- footer --- */
+footer {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  color: #fff;
+  padding: 2rem 1.2rem;
+  text-align: center;
+}
+footer a { color: #fff; font-weight: 600; }
+
+/* --- prose (why page) --- */
+.prose { max-width: 70ch; margin: 0 auto; }
+.prose h2 { color: var(--accent-2); margin-top: 2.2rem; }
+.prose blockquote {
+  margin: 1.4rem 0;
+  padding: .8rem 1.2rem;
+  border-left: 5px solid var(--accent);
+  background: var(--surface);
+  border-radius: 0 8px 8px 0;
+  color: var(--ink);
+}

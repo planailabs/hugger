@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>The case for archiving models — hugger</title>
+  <meta name="description" content="Why keeping your own copy of HuggingFace models matters: regulation, takedowns, relicensing, reproducibility, and sovereignty." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤗</text></svg>" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <nav class="nav">
+    <a class="brand" href="index.html"><span>🤗</span> hugger</a>
+    <span class="links">
+      <a href="index.html#why">Why archive</a>
+      <a href="index.html#how">How it works</a>
+      <a href="https://git.plan.ai/plan-ai/hugger">Source</a>
+    </span>
+  </nav>
+
+  <section>
+    <article class="prose">
+      <h1>The case for archiving models</h1>
+      <p class="lead">A model on the Hub is access, not ownership. Access can be revoked, geofenced, relicensed, or simply deleted — usually without warning. Archiving converts something you <em>can reach today</em> into something you <em>hold</em>.</p>
+
+      <h2>Regulation could cut off access</h2>
+      <p>AI is moving from “unregulated” to “heavily regulated” fast, and the rules are not uniform across the world. Several mechanisms can remove or restrict a model you rely on:</p>
+      <ul>
+        <li><strong>Compliance gating.</strong> Frameworks like the EU AI Act impose obligations on providers of general-purpose and “systemic-risk” models. The cheapest way for a host to comply in a given region is often to <em>geo-block</em> or <em>gate</em> a model rather than meet every obligation.</li>
+        <li><strong>Export controls.</strong> Capable models increasingly fall under dual-use / export rules. A weights file that’s freely downloadable today can become restricted by jurisdiction tomorrow.</li>
+        <li><strong>Liability &amp; takedown pressure.</strong> Legal exposure pushes platforms to remove first and adjudicate later. Models tied to disputed training data or safety incidents can vanish during an investigation.</li>
+      </ul>
+      <blockquote>You don’t need a model to be <em>banned</em> to lose it — you only need it to be <em>inconvenient to keep hosting</em> in your region.</blockquote>
+
+      <h2>Takedowns and relicensing happen routinely</h2>
+      <p>Even without regulators, the open-model ecosystem churns constantly:</p>
+      <ul>
+        <li>Repositories are deleted, renamed, or made private by their authors.</li>
+        <li>Licenses get tightened — a permissive release is replaced by a gated, “research-only,” or commercially-restricted one, and the old terms disappear.</li>
+        <li>Specific revisions are force-pushed away, so the exact weights you validated against no longer exist upstream.</li>
+      </ul>
+      <p>If you didn’t download it, you’re trusting that someone else will keep hosting precisely the artifact you need, forever, for free.</p>
+
+      <h2>Reproducibility demands the exact bytes</h2>
+      <p>Research papers, audits, and regulated deployments must be reproducible. “We used model X” is not reproducible if model X has since changed. hugger records the <strong>commit sha</strong> of every archive and can tell you when upstream has moved on — so you can reproduce results against the precise revision, years later.</p>
+
+      <h2>Sovereignty, air-gaps, and resilience</h2>
+      <p>Plenty of environments simply can’t depend on a public Hub at run time:</p>
+      <ul>
+        <li><strong>Air-gapped and high-security labs</strong> need every artifact stored internally.</li>
+        <li><strong>Data-residency rules</strong> may require models to live on infrastructure in a specific jurisdiction.</li>
+        <li><strong>Operational resilience</strong> means not having a single third party as a hard dependency for your product to boot.</li>
+      </ul>
+
+      <h2>What hugger does about it</h2>
+      <p>hugger is a small, self-hosted archiver: a server you run plus a one-click browser extension. It downloads full model snapshots to storage <em>you</em> control, pins the revision, tracks when updates appear, and lets you manage or remove archives — all from any HuggingFace model page. Nothing is sent to us; the extension talks only to your server.</p>
+      <p style="margin-top:1.6rem">
+        <a class="btn" href="index.html#how"><span class="ico">🤗</span> See how it works</a>
+        <a class="btn ghost" href="https://git.plan.ai/plan-ai/hugger">Get the source</a>
+      </p>
+    </article>
+  </section>
+
+  <footer>
+    <p>🤗 <strong>hugger</strong> — archive HuggingFace models before access disappears.</p>
+    <p><a href="https://git.plan.ai/plan-ai/hugger">Source &amp; docs</a> · <a href="index.html">Home</a></p>
+  </footer>
+</body>
+</html>

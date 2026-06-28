@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>hugger — one-click HuggingFace model archiver</title>
+  <meta name="description" content="hugger archives HuggingFace models to your own server in one click — keep a durable local copy before regulation, takedowns, or licensing changes cut off access." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤗</text></svg>" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <nav class="nav">
+    <a class="brand" href="/"><span>🤗</span> hugger</a>
+    <span class="links">
+      <a href="#why">Why archive</a>
+      <a href="#how">How it works</a>
+      <a href="why.html">The case for archiving</a>
+      <a href="https://git.plan.ai/plan-ai/hugger">Source</a>
+    </span>
+  </nav>
+
+  <!-- HERO -->
+  <header class="hero center">
+    <div class="wrap">
+      <div class="emoji" aria-hidden="true">🤗</div>
+      <h1>hugger</h1>
+      <p class="tagline">One-click archiving for HuggingFace models — keep your own copy before access disappears.</p>
+
+      <!-- Update these hrefs to the real store listings once published. -->
+      <div class="btns">
+        <a class="btn" href="https://addons.mozilla.org/firefox/addon/hugger/"><span class="ico">🦊</span> Firefox</a>
+        <a class="btn" href="https://chromewebstore.google.com/detail/hugger"><span class="ico">🌐</span> Chrome</a>
+        <a class="btn" href="https://microsoftedge.microsoft.com/addons/detail/hugger"><span class="ico">🧭</span> Edge</a>
+        <a class="btn ghost" href="https://git.plan.ai/plan-ai/hugger"><span class="ico">⌥</span> Self-host the server</a>
+      </div>
+      <p class="subtle">Also available for Firefox on Android. The extension talks only to <em>your own</em> hugger server — nothing is sent to us.</p>
+    </div>
+  </header>
+
+  <!-- WHY -->
+  <section id="why" class="alt">
+    <div class="wrap">
+      <h2 class="section-title">Why archive models?</h2>
+      <p class="lead">The model you build on today may not be downloadable tomorrow. Archiving turns “hosted somewhere” into “owned by you.”</p>
+      <div class="grid" style="margin-top:1.6rem">
+        <div class="card">
+          <div class="ico" aria-hidden="true">⚖️</div>
+          <h3>Regulation</h3>
+          <p>New AI rules and export controls can force models to be geofenced, gated, or pulled. A local archive keeps you working regardless of where policy lands.</p>
+        </div>
+        <div class="card">
+          <div class="ico" aria-hidden="true">🗑️</div>
+          <h3>Takedowns &amp; relicensing</h3>
+          <p>Repos get deleted, made private, or switched to restrictive licenses. If you didn’t download it, you may never get that exact version again.</p>
+        </div>
+        <div class="card">
+          <div class="ico" aria-hidden="true">🔁</div>
+          <h3>Reproducibility</h3>
+          <p>Research and audits need the <em>exact</em> commit. hugger pins the revision sha so results stay reproducible years later.</p>
+        </div>
+        <div class="card">
+          <div class="ico" aria-hidden="true">📡</div>
+          <h3>Offline &amp; sovereignty</h3>
+          <p>Air-gapped labs, spotty networks, and data-residency rules all need models stored on infrastructure you control.</p>
+        </div>
+      </div>
+      <p style="margin-top:1.6rem"><a class="btn ghost" href="why.html">Read the full case for archiving →</a></p>
+    </div>
+  </section>
+
+  <!-- HOW -->
+  <section id="how">
+    <div class="wrap">
+      <h2 class="section-title">How it works</h2>
+      <p class="lead">Run the small self-hosted hugger server, point the extension at it, and archive from any model page.</p>
+      <div class="steps" style="margin-top:1.6rem">
+        <div class="step"><span class="n"></span><div><strong>Self-host the server.</strong> A tiny Python app (web UI + API) that downloads full model snapshots to disk. Internet-exposable, with login + token auth, or a NixOS module for one-line deploys.</div></div>
+        <div class="step"><span class="n"></span><div><strong>Install the extension &amp; paste your token.</strong> Chrome, Firefox (desktop + Android), and Edge. The background worker holds the token; the page never sees it.</div></div>
+        <div class="step"><span class="n"></span><div><strong>Archive in one click.</strong> On any huggingface.co model page, hit <em>⤓ Archive</em>. hugger downloads the snapshot and tracks the commit.</div></div>
+        <div class="step"><span class="n"></span><div><strong>Manage &amp; update.</strong> The button shows <em>✓ Archived</em> with <em>Remove</em>, and offers <em>Update</em> when a newer revision is published.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="alt center">
+    <div class="wrap">
+      <div class="emoji" style="font-size:3.5rem" aria-hidden="true">🤗</div>
+      <h2 class="section-title">Keep the models you depend on.</h2>
+      <div class="btns" style="margin-top:1rem">
+        <a class="btn" href="https://addons.mozilla.org/firefox/addon/hugger/"><span class="ico">🦊</span> Get for Firefox</a>
+        <a class="btn" href="https://chromewebstore.google.com/detail/hugger"><span class="ico">🌐</span> Get for Chrome</a>
+        <a class="btn" href="https://microsoftedge.microsoft.com/addons/detail/hugger"><span class="ico">🧭</span> Get for Edge</a>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <p>🤗 <strong>hugger</strong> — archive HuggingFace models before access disappears.</p>
+    <p><a href="https://git.plan.ai/plan-ai/hugger">Source &amp; docs</a> · <a href="why.html">The case for archiving</a></p>
+  </footer>
+</body>
+</html>
