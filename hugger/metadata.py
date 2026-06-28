@@ -12,10 +12,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 META_NAME = ".hugger.json"
+PROGRESS_NAME = ".hugger.progress"
 
 
 def meta_path(model_dir: Path | str) -> Path:
     return Path(model_dir) / META_NAME
+
+
+def progress_file(model_dir: Path | str) -> Path:
+    return Path(model_dir) / PROGRESS_NAME
+
+
+def read_progress(model_dir: Path | str, meta: dict) -> int:
+    """Live downloaded bytes from the subprocess's tqdm progress file (works for
+    both classic and Xet transfers); falls back to scanning the filesystem."""
+    try:
+        n = int(progress_file(model_dir).read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return progress_bytes(model_dir, meta)
+    total = meta.get("total_size", 0) or n
+    return max(0, min(total, n))
 
 
 def build(repo_id: str, revision: str, sha: str, files: list[dict],
@@ -70,6 +86,22 @@ def file_downloaded(model_dir: Path | str, rel: str, expected_size: int | None =
         return f.stat().st_size == expected_size
     except OSError:
         return False
+
+
+def progress_bytes(model_dir: Path | str, meta: dict) -> int:
+    """Live downloaded bytes for a progress bar: completed files plus the bytes
+    of any in-flight `*.incomplete` staging files (so a single large file shows
+    byte-level progress, not a 0%->100% jump). Capped at total_size."""
+    done = state(model_dir, meta)["downloaded_bytes"]
+    partial = 0
+    cache = Path(model_dir) / ".cache"
+    if cache.exists():
+        for p in cache.rglob("*.incomplete"):
+            try:
+                partial += p.stat().st_size
+            except OSError:
+                pass
+    return min(meta.get("total_size", 0) or (done + partial), done + partial)
 
 
 def state(model_dir: Path | str, meta: dict) -> dict:

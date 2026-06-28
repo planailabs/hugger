@@ -87,13 +87,18 @@ def repo_files(repo_id: str, revision: str = "main") -> dict:
 
 
 def download(repo_id: str, revision: str, dest: Path,
-             allow_patterns: list[str] | None = None) -> str:
+             allow_patterns: list[str] | None = None, tqdm_class=None) -> str:
     """Download a repo snapshot into `dest`. If allow_patterns is given, only
-    those files are fetched (resumable, skips already-complete files)."""
+    those files are fetched (resumable, skips already-complete files). A custom
+    tqdm_class receives the aggregate byte progress (classic and Xet)."""
+    kw = {}
+    if tqdm_class is not None:
+        kw["tqdm_class"] = tqdm_class
     return snapshot_download(
         repo_id=repo_id,
         revision=revision,
         local_dir=str(dest),
         token=current_hf_token(),
         allow_patterns=allow_patterns,
+        **kw,
     )

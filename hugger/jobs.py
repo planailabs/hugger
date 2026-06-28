@@ -227,13 +227,19 @@ class JobManager:
 
             def poll():
                 while not poll_stop.is_set():
-                    job.done_bytes = metadata.state(dest, meta)["downloaded_bytes"]
+                    # transfer-accurate progress from the worker's tqdm file
+                    # (falls back to scanning the filesystem)
+                    job.done_bytes = metadata.read_progress(dest, meta)
                     poll_stop.wait(1.0)
 
             threading.Thread(target=poll, daemon=True).start()
 
             env = dict(os.environ)
             env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
+            # Xet transfers don't report incremental byte progress, so default to
+            # the classic LFS path (per-chunk progress). Operators can re-enable
+            # Xet by exporting HF_HUB_DISABLE_XET=0.
+            env.setdefault("HF_HUB_DISABLE_XET", "1")
             proc = subprocess.Popen(
                 [sys.executable, "-m", "hugger._dlworker", job.repo_id, job.revision, str(dest)],
                 env=env,
@@ -251,6 +257,7 @@ class JobManager:
 
             rc = proc.returncode
             poll_stop.set()
+            metadata.progress_file(dest).unlink(missing_ok=True)
             if rc == 0:
                 self._cache_archive(job.repo_id, meta, dest, job.store_id)
                 state = metadata.state(dest, meta)

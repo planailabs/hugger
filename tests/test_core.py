@@ -196,6 +196,32 @@ def test_metadata_build_and_state():
     assert not metadata.file_downloaded(d, "w.bin", 100)
 
 
+def test_progress_bytes_counts_incomplete():
+    d = Path(_TMP) / "prog"
+    meta = metadata.build("o/p", "main", "s", [{"path": "big.bin", "size": 1000}], None)
+    metadata.write(d, meta)
+    assert metadata.progress_bytes(d, meta) == 0
+    # in-flight staging file contributes its partial bytes
+    inc = d / ".cache" / "huggingface" / "download"
+    inc.mkdir(parents=True, exist_ok=True)
+    (inc / "big.bin.abc123.incomplete").write_bytes(b"x" * 400)
+    assert metadata.progress_bytes(d, meta) == 400
+    # once final file exists, total is capped (no double count during the move)
+    (d / "big.bin").write_bytes(b"y" * 1000)
+    assert metadata.progress_bytes(d, meta) == 1000
+
+
+def test_read_progress_from_file():
+    d = Path(_TMP) / "rp"
+    meta = metadata.build("o/r", "main", "s", [{"path": "big.bin", "size": 1000}], None)
+    metadata.write(d, meta)
+    assert metadata.read_progress(d, meta) == 0  # no file -> fs fallback
+    metadata.progress_file(d).write_text("600 1000")
+    assert metadata.read_progress(d, meta) == 600
+    metadata.progress_file(d).write_text("5000 1000")  # capped at total
+    assert metadata.read_progress(d, meta) == 1000
+
+
 def test_util_writable_and_free():
     d = Path(_TMP) / "wtest"
     util.check_writable(d)  # creates + verifies, no raise
