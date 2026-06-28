@@ -32,15 +32,15 @@ async function api(path, opts = {}) {
   if (!serverUrl) throw new Error("Server URL not set");
   if (!token) throw new Error("API token not set — open the extension popup");
   const base = serverUrl.replace(/\/+$/, "");
-  const res = await fetch(base + path, {
-    ...opts,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + token,
-      "X-Hugger-Token": token,
-      ...(opts.headers || {}),
-    },
-  });
+  const headers = {
+    Authorization: "Bearer " + token,
+    "X-Hugger-Token": token,
+    ...(opts.headers || {}),
+  };
+  // Only advertise a JSON body when we actually send one — a Content-Type on a
+  // bodyless GET/DELETE makes the server try to parse an empty body.
+  if (opts.body != null) headers["Content-Type"] = "application/json";
+  const res = await fetch(base + path, { ...opts, headers });
   const text = await res.text();
   let data;
   try {

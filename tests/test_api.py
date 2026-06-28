@@ -141,7 +141,34 @@ def test_login_success_and_access():
     cli = _setup_client()
     _login(cli)
     r = cli.get("/")
+    assert r.status_code == 200 and "Recent activity" in r.text
+
+
+def test_archives_page():
+    cli = _setup_client()
+    _login(cli)
+    r = cli.get("/archives")
     assert r.status_code == 200 and "Archived models" in r.text
+
+
+def test_no_token_warning_on_dashboard():
+    cli = _setup_client()
+    _login(cli)
+    hub.set_hf_token(None)
+    assert "No HuggingFace token set" in cli.get("/").text
+    hub.set_hf_token("hf_x")
+    assert "No HuggingFace token set" not in cli.get("/").text
+    hub.set_hf_token(None)
+
+
+def test_archive_status_get_with_content_type_header():
+    # Regression: a Content-Type on a bodyless GET must not 500 the endpoint.
+    cli = _setup_client()
+    r = cli.get(
+        "/api/archive/org/whatever",
+        headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"},
+    )
+    assert r.status_code == 200 and r.json()["archived"] is False
 
 
 def test_logout_clears_session():

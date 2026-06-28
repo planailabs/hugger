@@ -13,6 +13,9 @@ echo "== python unit + integration tests =="
 python tests/test_core.py
 python tests/test_api.py
 
+echo "== live HuggingFace Hub tests (skips if offline) =="
+python tests/test_hub_live.py
+
 echo "== nixos VM test: API download over self-signed HTTPS =="
 nix build ".#checks.${system}.vm" -L
 

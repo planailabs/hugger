@@ -129,8 +129,8 @@ All `/api/*` routes require `Authorization: Bearer <token>`.
 ## Tests
 
 ```bash
-# Python unit + HTTP integration
-python tests/test_core.py && python tests/test_api.py
+# Python unit + HTTP integration + live Hub (live tests skip when offline)
+python tests/test_core.py && python tests/test_api.py && python tests/test_hub_live.py
 
 # Everything, including the NixOS VM E2E tests (needs nix + KVM):
 nix develop .#test --command ./scripts/test-all.sh   # or: nix run .#test
@@ -150,7 +150,9 @@ and reached through an `/etc/hosts` override of `huggingface.co`
   HuggingFace model page, and drives the full archive → remove cycle via
   Selenium (`nixos/browser_check.py`).
 
-The `nix develop .#test` shell provides python+selenium and both browsers for
+`tests/test_hub_live.py` is the only suite that touches the **real** Hub (search
++ a tiny-model download); it skips when offline. The VM tests always use the fake
+hub. The `nix develop .#test` shell provides python+selenium and both browsers for
 running `nixos/browser_check.py` directly.
 
 ## Notes / known simplifications

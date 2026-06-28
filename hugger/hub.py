@@ -39,9 +39,9 @@ def _api() -> HfApi:
 def search_models(query: str, limit: int = 25) -> list[dict]:
     if not query.strip():
         return []
-    models = _api().list_models(
-        search=query, limit=limit, sort="downloads", direction=-1
-    )
+    # Note: the `direction` arg was removed in newer huggingface_hub; sorting by
+    # "downloads" already returns most-downloaded first.
+    models = _api().list_models(search=query, limit=limit, sort="downloads")
     out = []
     for m in models:
         out.append(

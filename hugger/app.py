@@ -158,6 +158,12 @@ THEME = Style(
     .job{margin:.5rem 0}
     .err{color:var(--danger);font-weight:600}
     a.link{color:var(--accent-2)}
+    .stat-num{font-weight:800;color:var(--accent-2)}
+    main ul{list-style:none;padding-left:0;margin:.6rem 0}
+    main li{padding:.4rem 0;border-bottom:1px solid var(--surface-2)}
+    .notice{background:#FFF3E0;border:1px solid var(--accent);border-left:5px solid var(--accent);
+      border-radius:8px;padding:.7rem 1rem;margin-bottom:1.2rem;color:var(--ink)}
+    .notice a{color:var(--accent-2);font-weight:700}
     """
 )
 
@@ -278,12 +284,55 @@ def archives_fragment():
                hx_trigger="every 5s", hx_swap="outerHTML")
 
 
+def summary_fragment():
+    """Compact recent-activity view for the dashboard (full table lives at /archives)."""
+    archives = store.list_archives()
+    total = len(archives)
+    size = sum(a["size_bytes"] for a in archives)
+    updates = sum(1 for a in archives if a["update_available"])
+
+    stats = Div(
+        Span(f"{total}", cls="stat-num"), Span(" archived", cls="muted"),
+        Span(" · ", cls="muted"), Span(human_size(size), cls="stat-num"),
+        Span(" on disk", cls="muted"),
+        *([Span(" · ", cls="muted"), Span(f"{updates}", cls="stat-num"),
+           Span(" update(s) available", cls="muted")] if updates else []),
+        cls="row",
+    )
+    if archives:
+        recent = [
+            Li(
+                A(a["repo_id"], href=f"https://huggingface.co/{a['repo_id']}",
+                  target="_blank", cls="link mono"),
+                Span(f" · {human_size(a['size_bytes'])}", cls="muted"),
+                (Span(" · update available", cls="badge update") if a["update_available"] else ""),
+            )
+            for a in archives[:5]
+        ]
+        recent_list = Ul(*recent)
+    else:
+        recent_list = P("Nothing archived yet. Search above or use the browser extension.", cls="muted")
+
+    return Div(
+        H2("Recent activity"),
+        stats,
+        recent_list,
+        A("View all archives →", href="/archives", cls="link"),
+        id="summary", hx_get="/ui/summary", hx_trigger="every 5s", hx_swap="outerHTML",
+    )
+
+
 def page(*content, sess=None):
     csrf = auth.csrf_token(sess) if sess is not None else ""
     return Title("hugger"), Div(
         Header(
             H1("🤗 hugger"),
-            Nav(A("Settings", href="/settings"), A("Logout", href="/logout")),
+            Nav(
+                A("Home", href="/"),
+                A("Archives", href="/archives"),
+                A("Settings", href="/settings"),
+                A("Logout", href="/logout"),
+            ),
         ),
         Main(*content),
         id="app",
@@ -312,7 +361,21 @@ def index(sess):
         cls="row",
     )
     downloads = Div(H2("Downloads"), manual, jobs_fragment(), cls="card")
-    return page(search, downloads, Div(archives_fragment(), cls="card"), sess=sess)
+    blocks = []
+    if hub.hf_token_source() == "none":
+        blocks.append(Div(
+            "⚠️ No HuggingFace token set. ",
+            A("Add one in Settings", href="/settings"),
+            " for faster downloads and to avoid rate limits.",
+            cls="notice",
+        ))
+    blocks += [search, downloads, Div(summary_fragment(), cls="card")]
+    return page(*blocks, sess=sess)
+
+
+@rt("/archives")
+def archives_page(sess):
+    return page(Div(archives_fragment(), cls="card"), sess=sess)
 
 
 @rt("/login", methods=["GET"])
@@ -427,6 +490,11 @@ def ui_jobs():
 @rt("/ui/archives", methods=["GET"])
 def ui_archives():
     return archives_fragment()
+
+
+@rt("/ui/summary", methods=["GET"])
+def ui_summary():
+    return summary_fragment()
 
 
 @rt("/ui/check/{repo_id:path}", methods=["POST"])
@@ -575,9 +643,11 @@ def api_archives():
 
 
 @rt("/api/archive/{repo_id:path}", methods=["GET"])
-def api_archive_status(repo_id: str):
+def api_archive_status(req):
     """Whether a specific repo is archived — used by the extension to decide
-    between offering Archive vs Remove/Update."""
+    between offering Archive vs Remove/Update. Takes `req` (not a body-sourced
+    param) so a stray Content-Type header can't trigger body parsing."""
+    repo_id = req.path_params["repo_id"]
     rec = store.get_archive(repo_id)
     if not rec:
         return JSONResponse({"repo_id": repo_id, "archived": False})
@@ -591,7 +661,8 @@ def api_archive_status(repo_id: str):
 
 
 @rt("/api/archive/{repo_id:path}", methods=["DELETE"])
-def api_archive_delete(repo_id: str):
+def api_archive_delete(req):
+    repo_id = req.path_params["repo_id"]
     jobs.delete_archive(repo_id)
     return JSONResponse({"ok": True, "repo_id": repo_id})
 
