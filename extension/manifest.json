@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "hugger — one-click model archiver",
+  "version": "0.1.0",
+  "description": "Archive HuggingFace models to your hugger server with one click.",
+  "permissions": ["storage"],
+  "host_permissions": ["http://localhost/*", "http://127.0.0.1/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_title": "hugger",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://huggingface.co/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,512 @@
+"""hugger — FastHTML app: SSR web UI + token-authenticated JSON API.
+
+Hardened for internet exposure: argon2 password login, signed session cookies,
+per-IP login throttle, CSRF tokens on state-changing UI routes, Bearer-token API
+for the browser extension, security headers + TrustedHost, optional HSTS/CORS.
+"""
+from __future__ import annotations
+
+import json
+import os
+import secrets
+
+from fasthtml.common import *  # noqa: F403  (FT tags, fast_app, serve, Beforeware, RedirectResponse)
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.responses import JSONResponse
+
+from . import auth, jobs, store
+from .config import ARCHIVE_DIR, cfg
+from .hub import search_models
+
+VERSION = "0.1.0"
+
+# --- bootstrap secrets / password ----------------------------------------
+
+def _bootstrap_password() -> None:
+    """Ensure a password exists. Env HUGGER_PASSWORD sets/updates it; otherwise a
+    random one is generated and printed once so the tool is never left open."""
+    env_pw = os.environ.get("HUGGER_PASSWORD")
+    if env_pw:
+        auth.set_password(env_pw)
+        return
+    if not cfg.password_hash:
+        generated = secrets.token_urlsafe(12)
+        auth.set_password(generated)
+        print("=" * 60)
+        print(" hugger: no password set — generated an initial one:")
+        print(f"   PASSWORD: {generated}")
+        print("   (set HUGGER_PASSWORD to override, change it in Settings)")
+        print("=" * 60)
+
+
+# --- helpers -------------------------------------------------------------
+
+def human_size(n: int) -> str:
+    f = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if f < 1024 or unit == "TB":
+            return f"{f:.0f} {unit}" if unit == "B" else f"{f:.1f} {unit}"
+        f /= 1024
+    return f"{f:.1f} TB"
+
+
+def _csrf_value(req, form_val: str | None) -> str | None:
+    return req.headers.get("x-csrf-token") or form_val
+
+
+# --- security middleware -------------------------------------------------
+
+class SecurityHeaders(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        resp = await call_next(request)
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["X-Frame-Options"] = "DENY"
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        # ponytail: moderate CSP — allows inline (htmx attrs) + the CDN FastHTML
+        # loads htmx from. Tighten to 'self' if you self-host htmx.
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
+        )
+        if cfg.https_only:
+            resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return resp
+
+
+def _middleware() -> list:
+    mw = [Middleware(TrustedHostMiddleware, allowed_hosts=cfg.allowed_hosts)]
+    if cfg.allowed_origins:
+        mw.append(
+            Middleware(
+                CORSMiddleware,
+                allow_origins=cfg.allowed_origins,
+                allow_methods=["GET", "POST", "DELETE"],
+                allow_headers=["authorization", "x-hugger-token", "content-type"],
+            )
+        )
+    mw.append(Middleware(SecurityHeaders))
+    return mw
+
+
+# --- auth gate -----------------------------------------------------------
+
+def _before(req, sess):
+    path = req.url.path
+    if path.startswith("/api/"):
+        if not auth.verify_token(auth.bearer_from_request(req)):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return  # token ok -> allow
+    if not sess.get("auth"):
+        return RedirectResponse("/login", status_code=303)
+
+
+beforeware = Beforeware(
+    _before,
+    skip=[r"/favicon\.ico", r"/static/.*", r".*\.css", r".*\.js", "/login"],
+)
+
+# --- theme ---------------------------------------------------------------
+
+THEME = Style(
+    """
+    :root{
+      --bg:#FFF8E1; --surface:#FFECB3; --surface-2:#FFE082;
+      --ink:#4E342E; --muted:#8D6E63;
+      --accent:#FB8C00; --accent-2:#F4511E; --danger:#E53935; --ok:#2E7D32;
+      --radius:12px;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--ink);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5}
+    header{background:linear-gradient(90deg,var(--accent),var(--accent-2));
+      color:#fff;padding:.8rem 1.2rem;display:flex;align-items:center;gap:1rem}
+    header h1{margin:0;font-size:1.25rem}
+    header nav{margin-left:auto;display:flex;gap:.6rem}
+    header a{color:#fff;text-decoration:none;opacity:.95;font-weight:600}
+    main{max-width:980px;margin:0 auto;padding:1.2rem}
+    .card{background:var(--surface);border:1px solid var(--surface-2);
+      border-radius:var(--radius);padding:1rem 1.2rem;margin-bottom:1.2rem}
+    h2{margin-top:0;color:var(--accent-2)}
+    input[type=text],input[type=password]{padding:.55rem .7rem;border:1px solid var(--surface-2);
+      border-radius:8px;background:#fffdf6;font-size:1rem;min-width:16rem}
+    button,.btn{cursor:pointer;border:none;border-radius:8px;padding:.55rem .9rem;
+      font-weight:600;font-size:.95rem;background:var(--accent);color:#fff}
+    button:hover{background:var(--accent-2)}
+    button.danger{background:var(--danger)}
+    button.ghost{background:transparent;color:var(--accent-2);border:1px solid var(--accent)}
+    table{width:100%;border-collapse:collapse}
+    th,td{text-align:left;padding:.5rem .4rem;border-bottom:1px solid var(--surface-2);font-size:.92rem}
+    th{color:var(--muted);font-weight:600}
+    .row{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
+    .badge{display:inline-block;padding:.15rem .5rem;border-radius:999px;font-size:.78rem;font-weight:700}
+    .badge.update{background:var(--danger);color:#fff}
+    .badge.current{background:var(--surface-2);color:var(--muted)}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.85em}
+    .muted{color:var(--muted)}
+    progress{width:100%;height:14px;accent-color:var(--accent-2)}
+    .job{margin:.5rem 0}
+    .err{color:var(--danger);font-weight:600}
+    a.link{color:var(--accent-2)}
+    """
+)
+
+app, rt = fast_app(
+    secret_key=cfg.secret_key,
+    before=beforeware,
+    middleware=_middleware(),
+    pico=False,
+    hdrs=(THEME,),
+)
+
+
+# --- shared fragments ----------------------------------------------------
+
+def search_results(models: list[dict]):
+    if not models:
+        return Div(P("No results.", cls="muted"), id="search-results")
+    rows = []
+    for m in models:
+        rows.append(
+            Tr(
+                Td(A(m["id"], href=f"https://huggingface.co/{m['id']}", target="_blank", cls="link mono")),
+                Td(f"{m['downloads']:,}", cls="muted"),
+                Td(f"♥ {m['likes']}", cls="muted"),
+                Td(
+                    Button(
+                        "⤓ Archive",
+                        hx_post="/ui/archive",
+                        hx_vals=json.dumps({"repo_id": m["id"]}),
+                        hx_target="#jobs",
+                        hx_swap="innerHTML",
+                    )
+                ),
+            )
+        )
+    return Div(
+        Table(Thead(Tr(Th("Model"), Th("Downloads"), Th("Likes"), Th())), Tbody(*rows)),
+        id="search-results",
+    )
+
+
+def jobs_fragment():
+    active = jobs.manager.active()
+    finished = [j for j in jobs.manager.recent() if j.status in ("done", "error")]
+    items = []
+    for j in active:
+        items.append(
+            Div(
+                Div(Span(j.repo_id, cls="mono"), Span(f" {j.percent}%", cls="muted")),
+                Progress(value=str(j.done_bytes), max=str(max(j.total_bytes, 1))),
+                Div(f"{human_size(j.done_bytes)} / {human_size(j.total_bytes)}", cls="muted"),
+                cls="job",
+            )
+        )
+    for j in finished:
+        if j.status == "error":
+            items.append(Div(Span(j.repo_id, cls="mono"), Span(" failed: ", cls="err"), Span(j.error or "", cls="err"), cls="job"))
+        else:
+            items.append(Div(Span("✓ ", cls=""), Span(j.repo_id, cls="mono"), Span(" archived", cls="muted"), cls="job"))
+    # Poll while anything is active; when an active job finishes, also refresh the
+    # archives table via an out-of-band trigger.
+    poll = "load, every 1s" if active else "none"
+    inner = items or [P("No active downloads.", cls="muted")]
+    return Div(
+        *inner,
+        id="jobs",
+        hx_get="/ui/jobs",
+        hx_trigger=poll,
+        hx_swap="outerHTML",
+    )
+
+
+def _short(sha: str | None) -> str:
+    return (sha or "")[:8]
+
+
+def archives_fragment():
+    rows = []
+    for a in store.list_archives():
+        badge = (
+            Span("update available", cls="badge update")
+            if a["update_available"]
+            else Span("current", cls="badge current")
+        )
+        rows.append(
+            Tr(
+                Td(A(a["repo_id"], href=f"https://huggingface.co/{a['repo_id']}", target="_blank", cls="link mono")),
+                Td(human_size(a["size_bytes"]), cls="muted"),
+                Td(_short(a["sha"]), cls="mono muted"),
+                Td(badge),
+                Td(
+                    Div(
+                        Button("Check", cls="ghost",
+                               hx_post=f"/ui/check/{a['repo_id']}", hx_target="#archives", hx_swap="outerHTML"),
+                        Button("Delete", cls="danger",
+                               hx_post=f"/ui/delete/{a['repo_id']}", hx_target="#archives", hx_swap="outerHTML",
+                               hx_confirm=f"Delete archive {a['repo_id']} from disk?"),
+                        cls="row",
+                    )
+                ),
+            )
+        )
+    body = (
+        Table(
+            Thead(Tr(Th("Model"), Th("Size"), Th("Commit"), Th("Status"), Th("Actions"))),
+            Tbody(*rows),
+        )
+        if rows
+        else P("Nothing archived yet. Search above or use the browser extension.", cls="muted")
+    )
+    header = Div(
+        H2("Archived models"),
+        Button("Check all for updates", cls="ghost",
+               hx_post="/ui/check-all", hx_target="#archives", hx_swap="outerHTML"),
+        cls="row",
+    )
+    return Div(header, body, id="archives", hx_get="/ui/archives",
+               hx_trigger="every 5s", hx_swap="outerHTML")
+
+
+def page(*content, sess=None):
+    csrf = auth.csrf_token(sess) if sess is not None else ""
+    return Title("hugger"), Div(
+        Header(
+            H1("🤗 hugger"),
+            Nav(A("Settings", href="/settings"), A("Logout", href="/logout")),
+        ),
+        Main(*content),
+        id="app",
+        hx_headers=json.dumps({"X-CSRF-Token": csrf}),
+    )
+
+
+# --- pages ---------------------------------------------------------------
+
+@rt("/")
+def index(sess):
+    search = Div(
+        H2("Find a model"),
+        Form(
+            Input(type="text", name="q", placeholder="e.g. llama, bert, whisper…"),
+            Button("Search"),
+            hx_post="/ui/search", hx_target="#search-results", hx_swap="outerHTML",
+        ),
+        Div(id="search-results"),
+        cls="card",
+    )
+    manual = Form(
+        Input(type="text", name="repo_id", placeholder="org/model — archive by id"),
+        Button("⤓ Archive"),
+        hx_post="/ui/archive", hx_target="#jobs", hx_swap="innerHTML",
+        cls="row",
+    )
+    downloads = Div(H2("Downloads"), manual, jobs_fragment(), cls="card")
+    return page(search, downloads, Div(archives_fragment(), cls="card"), sess=sess)
+
+
+@rt("/login", methods=["GET"])
+def login_form(req, error: str = ""):
+    msg = P(error, cls="err") if error else ""
+    return Title("hugger · login"), Div(
+        Header(H1("🤗 hugger")),
+        Main(
+            Div(
+                H2("Sign in"),
+                msg,
+                Form(
+                    Input(type="password", name="password", placeholder="password", autofocus=True),
+                    Button("Sign in"),
+                    method="post", action="/login",
+                ),
+                cls="card",
+            )
+        ),
+        id="app",
+    )
+
+
+@rt("/login", methods=["POST"])
+def login(req, sess, password: str = ""):
+    ip = req.client.host if req.client else "?"
+    locked = auth.is_locked(ip)
+    if locked:
+        return RedirectResponse(f"/login?error=Too+many+attempts.+Try+again+in+{locked}s", status_code=303)
+    if auth.verify_password(password):
+        auth.record_success(ip)
+        sess["auth"] = True
+        auth.csrf_token(sess)  # mint a CSRF token for this session
+        return RedirectResponse("/", status_code=303)
+    auth.record_failure(ip)
+    return RedirectResponse("/login?error=Invalid+password", status_code=303)
+
+
+@rt("/logout")
+def logout(sess):
+    sess.clear()
+    return RedirectResponse("/login", status_code=303)
+
+
+# --- UI fragments (HTMX, session + CSRF) ---------------------------------
+
+def _guard_csrf(req, sess, csrf):
+    return auth.csrf_ok(sess, _csrf_value(req, csrf))
+
+
+@rt("/ui/search", methods=["POST"])
+def ui_search(req, sess, q: str = "", csrf: str = ""):
+    if not _guard_csrf(req, sess, csrf):
+        return Div(P("Session expired, reload the page.", cls="err"), id="search-results")
+    return search_results(search_models(q))
+
+
+@rt("/ui/archive", methods=["POST"])
+def ui_archive(req, sess, repo_id: str = "", csrf: str = ""):
+    if not _guard_csrf(req, sess, csrf):
+        return Div(P("Session expired, reload the page.", cls="err"), id="jobs")
+    repo_id = repo_id.strip()
+    if repo_id:
+        jobs.manager.start(repo_id)
+    return jobs_fragment()
+
+
+@rt("/ui/jobs", methods=["GET"])
+def ui_jobs():
+    return jobs_fragment()
+
+
+@rt("/ui/archives", methods=["GET"])
+def ui_archives():
+    return archives_fragment()
+
+
+@rt("/ui/check/{repo_id:path}", methods=["POST"])
+def ui_check(req, sess, repo_id: str, csrf: str = ""):
+    if _guard_csrf(req, sess, csrf):
+        try:
+            jobs.check_update(repo_id)
+        except KeyError:
+            pass
+    return archives_fragment()
+
+
+@rt("/ui/check-all", methods=["POST"])
+def ui_check_all(req, sess, csrf: str = ""):
+    if _guard_csrf(req, sess, csrf):
+        for a in store.list_archives():
+            try:
+                jobs.check_update(a["repo_id"])
+            except Exception:
+                pass
+    return archives_fragment()
+
+
+@rt("/ui/delete/{repo_id:path}", methods=["POST"])
+def ui_delete(req, sess, repo_id: str, csrf: str = ""):
+    if _guard_csrf(req, sess, csrf):
+        jobs.delete_archive(repo_id)
+    return archives_fragment()
+
+
+# --- settings ------------------------------------------------------------
+
+@rt("/settings")
+def settings(sess, msg: str = ""):
+    note = P(msg, cls="muted") if msg else ""
+    token_card = Div(
+        H2("Extension API token"),
+        P("Paste this into the hugger browser extension to authorize it. "
+          "Keep it secret — it grants archive access.", cls="muted"),
+        Div(Span(cfg.api_token, cls="mono"), cls="card", style="background:#fffdf6"),
+        Form(Button("Rotate token", cls="danger"),
+             method="post", action="/settings/rotate-token"),
+        cls="card",
+    )
+    pw_card = Div(
+        H2("Change password"),
+        Form(
+            Input(type="password", name="current", placeholder="current password"),
+            Input(type="password", name="new", placeholder="new password"),
+            Button("Update password"),
+            method="post", action="/settings/password",
+        ),
+        cls="card",
+    )
+    info = Div(
+        H2("Server"),
+        P(f"Version {VERSION}", cls="muted"),
+        P("Archive dir: ", Span(str(ARCHIVE_DIR), cls="mono")),
+        P("HTTPS-only mode: " + ("on" if cfg.https_only else "off"), cls="muted"),
+        cls="card",
+    )
+    return page(note, token_card, pw_card, info, sess=sess)
+
+
+@rt("/settings/rotate-token", methods=["POST"])
+def settings_rotate():
+    auth.rotate_token()
+    return RedirectResponse("/settings?msg=Token+rotated", status_code=303)
+
+
+@rt("/settings/password", methods=["POST"])
+def settings_password(current: str = "", new: str = ""):
+    if not auth.verify_password(current):
+        return RedirectResponse("/settings?msg=Current+password+incorrect", status_code=303)
+    if len(new) < 6:
+        return RedirectResponse("/settings?msg=New+password+too+short", status_code=303)
+    auth.set_password(new)
+    return RedirectResponse("/settings?msg=Password+updated", status_code=303)
+
+
+# --- JSON API (extension; Bearer token via _before) ----------------------
+
+@rt("/api/ping", methods=["GET"])
+def api_ping():
+    return JSONResponse({"ok": True, "version": VERSION})
+
+
+@rt("/api/archive", methods=["POST"])
+async def api_archive(req):
+    body = {}
+    try:
+        body = await req.json()
+    except Exception:
+        form = await req.form()
+        body = dict(form)
+    repo_id = (body.get("repo_id") or "").strip()
+    if not repo_id:
+        return JSONResponse({"error": "repo_id required"}, status_code=400)
+    revision = (body.get("revision") or "main").strip()
+    job = jobs.manager.start(repo_id, revision)
+    return JSONResponse({"job_id": job.id, "repo_id": repo_id})
+
+
+@rt("/api/status/{job_id}", methods=["GET"])
+def api_status(job_id: str):
+    job = jobs.manager.get(job_id)
+    if not job:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse(job.as_dict())
+
+
+@rt("/api/archives", methods=["GET"])
+def api_archives():
+    return JSONResponse({"archives": store.list_archives()})
+
+
+# --- entrypoint ----------------------------------------------------------
+
+def main() -> None:
+    store.run_migrations()
+    _bootstrap_password()
+    import uvicorn
+
+    print(f"hugger {VERSION} → http://{cfg.host}:{cfg.port}")
+    uvicorn.run(app, host=cfg.host, port=cfg.port)
+
+
+if __name__ == "__main__":
+    main()

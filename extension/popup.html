@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body { font: 13px system-ui; width: 280px; margin: 0; padding: 14px; background: #FFF8E1; color: #4E342E; }
+      h1 { font-size: 15px; margin: 0 0 10px; color: #F4511E; }
+      label { display: block; margin: 8px 0 3px; font-weight: 600; }
+      input { width: 100%; padding: 7px; border: 1px solid #FFE082; border-radius: 6px; background: #fffdf6; }
+      button { margin-top: 12px; width: 100%; padding: 9px; border: none; border-radius: 6px; background: #FB8C00; color: #fff; font-weight: 700; cursor: pointer; }
+      button:hover { background: #F4511E; }
+      #status { margin-top: 10px; font-weight: 600; min-height: 16px; }
+      .ok { color: #2E7D32; } .err { color: #E53935; }
+      .hint { color: #8D6E63; font-size: 11px; margin-top: 6px; }
+    </style>
+  </head>
+  <body>
+    <h1>🤗 hugger</h1>
+    <label for="serverUrl">Server URL</label>
+    <input id="serverUrl" type="text" placeholder="https://hugger.example.com" />
+    <label for="token">API token</label>
+    <input id="token" type="password" placeholder="from hugger → Settings" />
+    <button id="save">Save & test connection</button>
+    <div id="status"></div>
+    <div class="hint">Find the token in the hugger web UI under Settings.</div>
+    <script src="popup.js"></script>
+  </body>
+</html>
