@@ -17,8 +17,8 @@ os.environ["HUGGER_ARCHIVE_DIR"] = str(Path(_TMP) / "archives")
 
 from hugger import hub  # noqa: E402
 
-# A genuinely tiny, stable public model maintained by HF for testing.
-TINY = "hf-internal-testing/tiny-random-gpt2"
+# A very small public model used for a real end-to-end download.
+TINY = "56m/Dumb"
 
 
 def _online() -> bool:

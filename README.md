@@ -113,6 +113,26 @@ server it requests host permission for that origin when you save. The manifest
 ships both `background.service_worker` (Chrome) and `background.scripts` (Firefox)
 so the same unpacked extension loads in either browser.
 
+### Publishing
+
+`scripts/publish.sh` builds **per-store** packages (so neither store's validator
+warns about the other's background key) and uploads them:
+
+```bash
+nix develop .#publish --command scripts/publish.sh all            # Chrome + Firefox + Edge
+nix develop .#publish --command scripts/publish.sh all --build-only   # just build dist/extension/*.zip
+nix develop .#publish --command scripts/publish.sh firefox        # one store
+```
+
+It uses Mozilla's `web-ext` (Firefox/AMO), `chrome-webstore-upload-cli` (Chrome),
+and the Edge Add-ons REST API (curl). Credentials come from env:
+
+| Store | Env vars |
+|---|---|
+| Chrome | `CHROME_EXTENSION_ID` `CHROME_CLIENT_ID` `CHROME_CLIENT_SECRET` `CHROME_REFRESH_TOKEN` |
+| Firefox | `WEB_EXT_API_KEY` `WEB_EXT_API_SECRET` |
+| Edge | `EDGE_PRODUCT_ID` `EDGE_API_KEY` `EDGE_CLIENT_ID` |
+
 ## API
 
 All `/api/*` routes require `Authorization: Bearer <token>`.

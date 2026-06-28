@@ -75,6 +75,15 @@
           '';
         };
 
+        # `nix develop .#publish` — tools to build + upload the extension to the
+        # Chrome, Firefox, and Edge stores via scripts/publish.sh.
+        devShells.publish = pkgs.mkShell {
+          packages = [ pkgs.jq pkgs.zip pkgs.curl pkgs.web-ext pkgs.nodejs ];
+          shellHook = ''
+            echo "hugger publish shell — scripts/publish.sh [all|chrome|firefox|edge] [--build-only]"
+          '';
+        };
+
         # `nix run .#test` — run the full test suite (unit + both VM E2E tests).
         apps.test = {
           type = "app";
