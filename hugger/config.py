@@ -77,13 +77,7 @@ class Config:
         self._data["api_token"] = token
         self.save()
 
-    @property
-    def password_hash(self) -> str | None:
-        return self._data.get("password_hash")
-
-    def set_password_hash(self, h: str) -> None:
-        self._data["password_hash"] = h
-        self.save()
+    # The login password hash lives in the DB (settings table), not here.
 
     # --- io ---------------------------------------------------------------
     def _load(self) -> dict:

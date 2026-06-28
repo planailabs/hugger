@@ -81,3 +81,43 @@ def set_update_status(repo_id: str, remote_sha: str, update_available: bool) -> 
 def delete_archive(repo_id: str) -> None:
     with closing(_connect()) as conn, conn:
         conn.execute("DELETE FROM archives WHERE repo_id=?", (repo_id,))
+
+
+# --- settings (key/value) ------------------------------------------------
+
+def get_setting(key: str) -> str | None:
+    with closing(_connect()) as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else None
+
+
+def set_setting(key: str, value: str) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+
+
+# --- jobs (persisted for restart resume) ---------------------------------
+
+def upsert_job(job_id: str, repo_id: str, revision: str, status: str,
+               total_bytes: int = 0, sha: str | None = None, error: str | None = None) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            """INSERT INTO jobs (id, repo_id, revision, status, total_bytes, sha, error, created_at, updated_at)
+                 VALUES (?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET
+                 status=excluded.status, total_bytes=excluded.total_bytes,
+                 sha=excluded.sha, error=excluded.error, updated_at=excluded.updated_at""",
+            (job_id, repo_id, revision, status, total_bytes, sha, error, _now(), _now()),
+        )
+
+
+def list_active_jobs() -> list[dict]:
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            "SELECT * FROM jobs WHERE status IN ('queued','downloading') ORDER BY created_at"
+        ).fetchall()
+        return [dict(r) for r in rows]

@@ -66,8 +66,23 @@ class JobManager:
         job = Job(id=uuid.uuid4().hex[:12], repo_id=repo_id, revision=revision)
         with self._lock:
             self._jobs[job.id] = job
+        store.upsert_job(job.id, repo_id, revision, "queued")
         threading.Thread(target=self._run, args=(job,), daemon=True).start()
         return job
+
+    def resume_pending(self) -> None:
+        """Re-launch jobs that were queued/downloading when the process stopped.
+
+        snapshot_download resumes partial downloads (it skips complete files and
+        continues incomplete ones), so this just re-runs them."""
+        for row in store.list_active_jobs():
+            job = Job(
+                id=row["id"], repo_id=row["repo_id"], revision=row["revision"],
+                status="queued", total_bytes=row["total_bytes"] or 0, sha=row["sha"],
+            )
+            with self._lock:
+                self._jobs[job.id] = job
+            threading.Thread(target=self._run, args=(job,), daemon=True).start()
 
     def get(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)
@@ -97,6 +112,7 @@ class JobManager:
             meta = hub.repo_meta(job.repo_id, job.revision)
             job.total_bytes = meta["total_size"]
             job.sha = meta["sha"]
+            store.upsert_job(job.id, job.repo_id, job.revision, "downloading", job.total_bytes, job.sha)
 
             poller = threading.Thread(target=poll, daemon=True)
             poller.start()
@@ -110,10 +126,12 @@ class JobManager:
             job.done_bytes = size or job.total_bytes
             store.upsert_archive(job.repo_id, job.revision, job.sha, str(dest), size)
             job.status = "done"
+            store.upsert_job(job.id, job.repo_id, job.revision, "done", job.total_bytes, job.sha)
         except Exception as e:  # surface the real error to the UI/API
             stop.set()
             job.status = "error"
             job.error = f"{type(e).__name__}: {e}"
+            store.upsert_job(job.id, job.repo_id, job.revision, "error", job.total_bytes, job.sha, job.error)
 
 
 def delete_archive(repo_id: str) -> None:

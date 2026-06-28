@@ -32,8 +32,12 @@ nix run            # boot the server (uses uv under the hood)
 ```
 
 On first run, if no password is set, a random one is generated and printed to
-the console. Log in, then open **Settings** to see the **API token** for the
-extension and to change your password.
+the console; you are **forced to change it on first login**. Afterwards, open
+**Settings** to see the **API token** for the extension and to change your
+password again. The password hash and app settings are stored in the SQLite DB.
+
+In-progress downloads are persisted, so if the server restarts mid-download they
+**resume automatically** on next start (`snapshot_download` continues partial files).
 
 ### Configuration (env vars)
 
