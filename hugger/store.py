@@ -1,13 +1,14 @@
 """SQLite persistence. Schema is owned by yoyo-migrations (hugger/migrations).
 
 A fresh connection is opened per call. SQLite handles file locking, and this
-sidesteps cross-thread connection sharing (handlers run in a threadpool, download
-jobs run in their own threads). Fine for a localhost/low-traffic tool.
+sidesteps cross-thread connection sharing (handlers run in a threadpool, jobs run
+in their own threads). Fine for a localhost/low-traffic tool.
 ponytail: per-call connections; add a pool only if profiling shows it matters.
 """
 from __future__ import annotations
 
 import sqlite3
+import uuid
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,10 @@ _migrated = False
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _id() -> str:
+    return uuid.uuid4().hex[:12]
 
 
 def run_migrations() -> None:
@@ -42,31 +47,39 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-# --- CRUD ----------------------------------------------------------------
+# --- archives ------------------------------------------------------------
 
-def upsert_archive(repo_id: str, revision: str, sha: str, path: str, size_bytes: int) -> None:
+def upsert_archive(repo_id: str, revision: str, sha: str, path: str,
+                   size_bytes: int, store_id: str) -> None:
     with closing(_connect()) as conn, conn:
         conn.execute(
             """INSERT INTO archives
-                 (repo_id, revision, sha, path, size_bytes, archived_at, last_checked, update_available, remote_sha)
-               VALUES (?,?,?,?,?,?,?,0,?)
+                 (repo_id, revision, sha, path, size_bytes, archived_at, last_checked,
+                  update_available, remote_sha, store_id)
+               VALUES (?,?,?,?,?,?,?,0,?,?)
                ON CONFLICT(repo_id) DO UPDATE SET
                  revision=excluded.revision, sha=excluded.sha, path=excluded.path,
                  size_bytes=excluded.size_bytes, archived_at=excluded.archived_at,
-                 last_checked=excluded.last_checked, update_available=0, remote_sha=excluded.remote_sha""",
-            (repo_id, revision, sha, path, size_bytes, _now(), _now(), sha),
+                 last_checked=excluded.last_checked, update_available=0,
+                 remote_sha=excluded.remote_sha, store_id=excluded.store_id""",
+            (repo_id, revision, sha, path, size_bytes, _now(), _now(), sha, store_id),
         )
+
+
+def _archive_select() -> str:
+    return ("SELECT a.*, s.name AS store_name FROM archives a "
+            "LEFT JOIN stores s ON a.store_id = s.id ")
 
 
 def list_archives() -> list[dict]:
     with closing(_connect()) as conn:
-        rows = conn.execute("SELECT * FROM archives ORDER BY archived_at DESC").fetchall()
+        rows = conn.execute(_archive_select() + "ORDER BY a.archived_at DESC").fetchall()
         return [dict(r) for r in rows]
 
 
 def get_archive(repo_id: str) -> dict | None:
     with closing(_connect()) as conn:
-        row = conn.execute("SELECT * FROM archives WHERE repo_id=?", (repo_id,)).fetchone()
+        row = conn.execute(_archive_select() + "WHERE a.repo_id=?", (repo_id,)).fetchone()
         return dict(row) if row else None
 
 
@@ -81,6 +94,72 @@ def set_update_status(repo_id: str, remote_sha: str, update_available: bool) -> 
 def delete_archive(repo_id: str) -> None:
     with closing(_connect()) as conn, conn:
         conn.execute("DELETE FROM archives WHERE repo_id=?", (repo_id,))
+
+
+# --- data stores ---------------------------------------------------------
+
+def ensure_default_store(path: str) -> str:
+    """Create the default store on first run and backfill archives that predate
+    multi-store. Returns the default store id."""
+    with closing(_connect()) as conn, conn:
+        row = conn.execute("SELECT id FROM stores WHERE is_default=1").fetchone()
+        if row:
+            sid = row["id"]
+        else:
+            sid = _id()
+            conn.execute(
+                "INSERT INTO stores (id, name, path, is_default, created_at) VALUES (?,?,?,1,?)",
+                (sid, "default", path, _now()),
+            )
+        conn.execute("UPDATE archives SET store_id=? WHERE store_id IS NULL", (sid,))
+        return sid
+
+
+def add_store(name: str, path: str) -> str:
+    sid = _id()
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "INSERT INTO stores (id, name, path, is_default, created_at) VALUES (?,?,?,0,?)",
+            (sid, name, path, _now()),
+        )
+    return sid
+
+
+def list_stores() -> list[dict]:
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            "SELECT s.*, (SELECT COUNT(*) FROM archives a WHERE a.store_id=s.id) AS n_models "
+            "FROM stores s ORDER BY s.is_default DESC, s.name"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_store(store_id: str) -> dict | None:
+    with closing(_connect()) as conn:
+        row = conn.execute("SELECT * FROM stores WHERE id=?", (store_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def get_default_store() -> dict | None:
+    with closing(_connect()) as conn:
+        row = conn.execute("SELECT * FROM stores WHERE is_default=1").fetchone()
+        return dict(row) if row else None
+
+
+def set_default_store(store_id: str) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute("UPDATE stores SET is_default=0")
+        conn.execute("UPDATE stores SET is_default=1 WHERE id=?", (store_id,))
+
+
+def store_model_count(store_id: str) -> int:
+    with closing(_connect()) as conn:
+        return conn.execute("SELECT COUNT(*) FROM archives WHERE store_id=?", (store_id,)).fetchone()[0]
+
+
+def delete_store(store_id: str) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute("DELETE FROM stores WHERE id=? AND is_default=0", (store_id,))
 
 
 # --- settings (key/value) ------------------------------------------------
@@ -107,22 +186,32 @@ def delete_setting(key: str) -> None:
 
 # --- jobs (persisted for restart resume) ---------------------------------
 
-def upsert_job(job_id: str, repo_id: str, revision: str, status: str,
-               total_bytes: int = 0, sha: str | None = None, error: str | None = None) -> None:
+def save_job(d: dict) -> None:
     with closing(_connect()) as conn, conn:
         conn.execute(
-            """INSERT INTO jobs (id, repo_id, revision, status, total_bytes, sha, error, created_at, updated_at)
-                 VALUES (?,?,?,?,?,?,?,?,?)
+            """INSERT INTO jobs
+                 (id, repo_id, revision, type, status, total_bytes, sha, error,
+                  store_id, src_store_id, created_at, updated_at)
+               VALUES (:id,:repo_id,:revision,:type,:status,:total_bytes,:sha,:error,
+                       :store_id,:src_store_id,:now,:now)
                ON CONFLICT(id) DO UPDATE SET
-                 status=excluded.status, total_bytes=excluded.total_bytes,
-                 sha=excluded.sha, error=excluded.error, updated_at=excluded.updated_at""",
-            (job_id, repo_id, revision, status, total_bytes, sha, error, _now(), _now()),
+                 status=excluded.status, total_bytes=excluded.total_bytes, sha=excluded.sha,
+                 error=excluded.error, store_id=excluded.store_id,
+                 src_store_id=excluded.src_store_id, updated_at=excluded.updated_at""",
+            {
+                "id": d["id"], "repo_id": d["repo_id"], "revision": d.get("revision", "main"),
+                "type": d.get("type", "download"), "status": d["status"],
+                "total_bytes": d.get("total_bytes", 0), "sha": d.get("sha"),
+                "error": d.get("error"), "store_id": d.get("store_id"),
+                "src_store_id": d.get("src_store_id"), "now": _now(),
+            },
         )
 
 
-def list_active_jobs() -> list[dict]:
+def list_jobs(statuses: list[str]) -> list[dict]:
+    placeholders = ",".join("?" * len(statuses))
     with closing(_connect()) as conn:
         rows = conn.execute(
-            "SELECT * FROM jobs WHERE status IN ('queued','downloading') ORDER BY created_at"
+            f"SELECT * FROM jobs WHERE status IN ({placeholders}) ORDER BY created_at", statuses
         ).fetchall()
         return [dict(r) for r in rows]

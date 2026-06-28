@@ -18,17 +18,18 @@ from hugger import auth  # noqa: E402
 
 def test_store_crud():
     store.run_migrations()
-    store.upsert_archive("org/model", "main", "abc12345", "/tmp/x", 2048)
+    sid = store.ensure_default_store(str(Path(_TMP) / "archives"))
+    store.upsert_archive("org/model", "main", "abc12345", "/tmp/x", 2048, sid)
     rows = store.list_archives()
     assert len(rows) == 1 and rows[0]["repo_id"] == "org/model"
-    assert rows[0]["update_available"] == 0
+    assert rows[0]["update_available"] == 0 and rows[0]["store_id"] == sid
 
     store.set_update_status("org/model", "def67890", True)
     rec = store.get_archive("org/model")
     assert rec["update_available"] == 1 and rec["remote_sha"] == "def67890"
 
     # upsert again resets the update flag and keeps a single row.
-    store.upsert_archive("org/model", "main", "def67890", "/tmp/x", 4096)
+    store.upsert_archive("org/model", "main", "def67890", "/tmp/x", 4096, sid)
     rec = store.get_archive("org/model")
     assert rec["update_available"] == 0 and rec["size_bytes"] == 4096
     assert len(store.list_archives()) == 1
@@ -44,8 +45,8 @@ def test_human_size():
     assert human_size(5 * 1024 * 1024) == "5.0 MB"
 
 
-def test_local_path_cross_platform():
-    p = hub.local_path("org/model")
+def test_store_repo_path_cross_platform():
+    p = jobs.store_repo_path("/data", "org/model")
     assert p.parts[-2:] == ("org", "model")  # uses OS separator, not literal "/"
 
 
@@ -110,43 +111,59 @@ def test_settings_kv():
 
 
 def test_jobs_persistence():
-    store.upsert_job("j1", "org/m", "main", "queued")
-    active = [j["id"] for j in store.list_active_jobs()]
-    assert "j1" in active
-    store.upsert_job("j1", "org/m", "main", "downloading", 100, "sha")
-    store.upsert_job("j1", "org/m", "main", "done", 100, "sha")
-    assert "j1" not in [j["id"] for j in store.list_active_jobs()]
+    store.save_job({"id": "j1", "repo_id": "org/m", "status": "queued"})
+    assert "j1" in [j["id"] for j in store.list_jobs(["queued", "running"])]
+    store.save_job({"id": "j1", "repo_id": "org/m", "status": "running", "total_bytes": 100})
+    store.save_job({"id": "j1", "repo_id": "org/m", "status": "done", "total_bytes": 100})
+    assert "j1" not in [j["id"] for j in store.list_jobs(["queued", "running"])]
+    assert "j1" in [j["id"] for j in store.list_jobs(["done"])]
 
 
-def test_resume_pending():
+def test_stores_crud():
+    a = store.ensure_default_store(str(Path(_TMP) / "archives"))
+    b = store.add_store("cold", str(Path(_TMP) / "cold"))
+    names = {s["name"] for s in store.list_stores()}
+    assert {"default", "cold"} <= names
+    assert store.get_default_store()["id"] == a
+    store.set_default_store(b)
+    assert store.get_default_store()["id"] == b
+    store.set_default_store(a)  # restore
+    # empty, non-default store can be deleted
+    store.delete_store(b)
+    assert store.get_store(b) is None
+
+
+def _make_archive(store_id, repo_id, files):
+    st = store.get_store(store_id)
+    p = jobs.store_repo_path(st["path"], repo_id)
+    p.mkdir(parents=True, exist_ok=True)
+    for name, data in files.items():
+        (p / name).write_bytes(data)
+    size = jobs._dir_size(p)
+    store.upsert_archive(repo_id, "main", "sha-move", str(p), size, store_id)
+    return p
+
+
+def test_move_job_across_stores():
     import time
-    from pathlib import Path
+    a = store.ensure_default_store(str(Path(_TMP) / "archives"))
+    b = store.add_store("dest", str(Path(_TMP) / "dest"))
+    src = _make_archive(a, "org/mover", {"config.json": b"{}", "w.bin": b"x" * 2048})
 
-    # Seed a job that was mid-download when the process "stopped".
-    store.upsert_job("rj1", "org/resume", "main", "downloading", 0, None)
-
-    orig_meta, orig_dl = jobs.hub.repo_meta, jobs.hub.download
-    jobs.hub.repo_meta = lambda r, rev="main": {"sha": "deadbeef", "total_size": 5, "n_files": 1}
-
-    def fake_dl(r, rev, dest):
-        Path(dest).mkdir(parents=True, exist_ok=True)
-        (Path(dest) / "f.bin").write_bytes(b"x" * 5)
-        return str(dest)
-
-    jobs.hub.download = fake_dl
-    try:
-        jobs.manager.resume_pending()
-        rec = None
-        for _ in range(50):
-            rec = store.get_archive("org/resume")
-            if rec:
-                break
-            time.sleep(0.1)
-        assert rec is not None and rec["sha"] == "deadbeef"
-        assert "rj1" not in [j["id"] for j in store.list_active_jobs()]
-    finally:
-        jobs.hub.repo_meta, jobs.hub.download = orig_meta, orig_dl
-        store.delete_archive("org/resume")
+    job = jobs.manager.start_move("org/mover", b)
+    for _ in range(100):
+        if jobs.manager.get(job.id).status in ("done", "error"):
+            break
+        time.sleep(0.05)
+    j = jobs.manager.get(job.id)
+    assert j.status == "done", j.error
+    rec = store.get_archive("org/mover")
+    assert rec["store_id"] == b
+    dest = jobs.store_repo_path(store.get_store(b)["path"], "org/mover")
+    assert (dest / "w.bin").stat().st_size == 2048
+    assert not src.exists()  # source copy removed after the move
+    store.delete_archive("org/mover")
+    store.delete_store(b)
 
 
 if __name__ == "__main__":

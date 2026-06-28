@@ -6,7 +6,7 @@ from pathlib import Path
 from huggingface_hub import HfApi, snapshot_download
 
 from . import store
-from .config import ARCHIVE_DIR, cfg
+from .config import cfg
 
 _HF_TOKEN_KEY = "hf_token"
 
@@ -64,11 +64,6 @@ def repo_meta(repo_id: str, revision: str = "main") -> dict:
 
 def remote_sha(repo_id: str, revision: str = "main") -> str:
     return _api().model_info(repo_id, revision=revision).sha
-
-
-def local_path(repo_id: str) -> Path:
-    # repo_id "org/name" -> <archives>/org/name, cross-platform.
-    return ARCHIVE_DIR.joinpath(*repo_id.split("/"))
 
 
 def download(repo_id: str, revision: str, dest: Path) -> str:

@@ -73,6 +73,16 @@ password again. The password hash and app settings are stored in the SQLite DB.
 In-progress downloads are persisted, so if the server restarts mid-download they
 **resume automatically** on next start (`snapshot_download` continues partial files).
 
+### Data stores
+
+Models can be archived to multiple **data stores** (directories). The **default**
+store lives in `~/.hugger/archives`; add more under **Stores**, pick which store a
+download targets, set a new default, and **move** an archived model between stores.
+Moves run as their own jobs (they're large). Both download and move jobs can be
+**paused/resumed** and **auto-resume after a restart** — downloads run in a
+subprocess that's terminated on pause (huggingface_hub resumes the partial), and
+moves copy file-by-file, skipping what's already there.
+
 ### Configuration (env vars)
 
 | Var | Default | Purpose |

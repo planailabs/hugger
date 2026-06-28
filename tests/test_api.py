@@ -21,6 +21,7 @@ from hugger import auth, store, jobs, hub  # noqa: E402
 PASSWORD = "test1234"
 auth.set_password(PASSWORD)
 TOKEN = auth.cfg.api_token
+STORE = store.ensure_default_store(os.path.join(_TMP, "archives"))
 
 # Stub out real downloads: api/ui archive should not hit the network.
 class _FakeJob:
@@ -76,8 +77,8 @@ def test_api_archives_listing():
 
 def test_api_archive_validation_and_start():
     cli = _setup_client()
-    orig = jobs.manager.start
-    jobs.manager.start = lambda repo_id, revision="main": _FakeJob(repo_id)
+    orig = jobs.manager.start_download
+    jobs.manager.start_download = lambda repo_id, revision="main", store_id=None: _FakeJob(repo_id)
     try:
         h = {"Authorization": f"Bearer {TOKEN}"}
         assert cli.post("/api/archive", json={}, headers=h).status_code == 400
@@ -85,7 +86,7 @@ def test_api_archive_validation_and_start():
         assert r.status_code == 200 and r.json()["repo_id"] == "org/m"
         assert r.json()["job_id"].startswith("fake")
     finally:
-        jobs.manager.start = orig
+        jobs.manager.start_download = orig
 
 
 def test_api_status_not_found():
@@ -101,7 +102,7 @@ def test_api_archive_status_and_delete():
     r = cli.get("/api/archive/org/unknown-model", headers=h)
     assert r.status_code == 200 and r.json()["archived"] is False
     # seed one, then it reports archived
-    store.upsert_archive("org/known-model", "main", "sha1", os.path.join(_TMP, "ka"), 99)
+    store.upsert_archive("org/known-model", "main", "sha1", os.path.join(_TMP, "ka"), 99, STORE)
     r = cli.get("/api/archive/org/known-model", headers=h)
     body = r.json()
     assert body["archived"] is True and body["size_bytes"] == 99
@@ -114,6 +115,42 @@ def test_api_archive_status_and_delete():
 def test_api_archive_status_requires_token():
     cli = _setup_client()
     assert cli.get("/api/archive/org/x").status_code == 401
+
+
+def test_api_stores_listing():
+    cli = _setup_client()
+    r = cli.get("/api/stores", headers={"Authorization": f"Bearer {TOKEN}"})
+    assert r.status_code == 200
+    names = {s["name"] for s in r.json()["stores"]}
+    assert "default" in names
+
+
+def test_api_job_pause_resume_ok():
+    cli = _setup_client()
+    h = {"Authorization": f"Bearer {TOKEN}"}
+    assert cli.post("/api/jobs/none/pause", headers=h).json()["ok"] is True
+    assert cli.post("/api/jobs/none/resume", headers=h).json()["ok"] is True
+
+
+def test_stores_page_renders():
+    cli = _setup_client()
+    _login(cli)
+    assert "Data stores" in cli.get("/stores").text
+
+
+def test_ui_move_starts_job():
+    cli = _setup_client()
+    _login(cli)
+    called = {}
+    orig = jobs.manager.start_move
+    jobs.manager.start_move = lambda repo_id, dest: called.update(repo=repo_id, dest=dest) or _FakeJob(repo_id)
+    try:
+        cli.post("/ui/move/org/mv", data={"store_id": "s2"})  # no csrf -> ignored
+        assert not called
+        cli.post("/ui/move/org/mv", data={"store_id": "s2"}, headers={"X-CSRF-Token": _csrf(cli)})
+        assert called == {"repo": "org/mv", "dest": "s2"}
+    finally:
+        jobs.manager.start_move = orig
 
 
 # --- web auth / sessions -------------------------------------------------
@@ -192,7 +229,7 @@ def test_login_throttle_locks_out():
 def test_delete_requires_csrf():
     cli = _setup_client()
     _login(cli)
-    store.upsert_archive("org/csrf", "main", "sha123", os.path.join(_TMP, "fake-archive"), 10)
+    store.upsert_archive("org/csrf", "main", "sha123", os.path.join(_TMP, "fake-archive"), 10, STORE)
     # Without CSRF header -> no deletion.
     cli.post("/ui/delete/org/csrf")
     assert store.get_archive("org/csrf") is not None
@@ -205,15 +242,15 @@ def test_archive_ui_requires_csrf():
     cli = _setup_client()
     _login(cli)
     started = {"n": 0}
-    orig = jobs.manager.start
-    jobs.manager.start = lambda repo_id, revision="main": started.__setitem__("n", started["n"] + 1) or _FakeJob(repo_id)
+    orig = jobs.manager.start_download
+    jobs.manager.start_download = lambda repo_id, revision="main", store_id=None: started.__setitem__("n", started["n"] + 1) or _FakeJob(repo_id)
     try:
         cli.post("/ui/archive", data={"repo_id": "org/x"})  # no csrf
         assert started["n"] == 0
         cli.post("/ui/archive", data={"repo_id": "org/x"}, headers={"X-CSRF-Token": _csrf(cli)})
         assert started["n"] == 1
     finally:
-        jobs.manager.start = orig
+        jobs.manager.start_download = orig
 
 
 # --- settings ------------------------------------------------------------

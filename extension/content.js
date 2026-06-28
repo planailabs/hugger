@@ -115,8 +115,11 @@ function pollJob(jobId) {
       return;
     }
     const j = resp.data;
-    if (j.status === "downloading") {
+    if (j.status === "queued" || j.status === "running" || j.status === "downloading") {
       toast(`${CURRENT}: ${j.percent}%`);
+    } else if (j.status === "paused") {
+      clearInterval(iv);
+      toast(`⏸ ${CURRENT} paused`);
     } else if (j.status === "done") {
       clearInterval(iv);
       toast(`✓ Archived ${CURRENT}`);

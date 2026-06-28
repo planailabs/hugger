@@ -193,6 +193,7 @@ def search_results(models: list[dict]):
                         "⤓ Archive",
                         hx_post="/ui/archive",
                         hx_vals=json.dumps({"repo_id": m["id"]}),
+                        hx_include="#target-store",
                         hx_target="#jobs",
                         hx_swap="innerHTML",
                     )
@@ -205,28 +206,43 @@ def search_results(models: list[dict]):
     )
 
 
+def _job_verb(j) -> str:
+    return "move" if j.type == "move" else "download"
+
+
 def jobs_fragment():
     active = jobs.manager.active()
     finished = [j for j in jobs.manager.recent() if j.status in ("done", "error")]
     items = []
     for j in active:
+        kind = "⇄ move" if j.type == "move" else "⤓ download"
+        if j.status == "paused":
+            ctrl = Button("Resume", cls="ghost", hx_post=f"/ui/jobs/{j.id}/resume",
+                          hx_target="#jobs", hx_swap="outerHTML")
+            state = Span(" paused", cls="muted")
+        else:
+            ctrl = Button("Pause", cls="ghost", hx_post=f"/ui/jobs/{j.id}/pause",
+                          hx_target="#jobs", hx_swap="outerHTML")
+            state = Span(f" {j.percent}%", cls="muted")
         items.append(
             Div(
-                Div(Span(j.repo_id, cls="mono"), Span(f" {j.percent}%", cls="muted")),
+                Div(Span(f"{kind} ", cls="muted"), Span(j.repo_id, cls="mono"), state),
                 Progress(value=str(j.done_bytes), max=str(max(j.total_bytes, 1))),
-                Div(f"{human_size(j.done_bytes)} / {human_size(j.total_bytes)}", cls="muted"),
+                Div(
+                    Span(f"{human_size(j.done_bytes)} / {human_size(j.total_bytes)}", cls="muted"),
+                    ctrl, cls="row",
+                ),
                 cls="job",
             )
         )
     for j in finished:
         if j.status == "error":
-            items.append(Div(Span(j.repo_id, cls="mono"), Span(" failed: ", cls="err"), Span(j.error or "", cls="err"), cls="job"))
+            items.append(Div(Span(j.repo_id, cls="mono"), Span(f" {_job_verb(j)} failed: ", cls="err"), Span(j.error or "", cls="err"), cls="job"))
         else:
-            items.append(Div(Span("✓ ", cls=""), Span(j.repo_id, cls="mono"), Span(" archived", cls="muted"), cls="job"))
-    # Poll while anything is active; when an active job finishes, also refresh the
-    # archives table via an out-of-band trigger.
-    poll = "load, every 1s" if active else "none"
-    inner = items or [P("No active downloads.", cls="muted")]
+            items.append(Div(Span("✓ ", cls=""), Span(j.repo_id, cls="mono"), Span(f" {_job_verb(j)}d", cls="muted"), cls="job"))
+    # Poll while anything is running; paused jobs don't need polling.
+    poll = "load, every 1s" if any(j.status in ("queued", "running") for j in active) else "none"
+    inner = items or [P("No active jobs.", cls="muted")]
     return Div(
         *inner,
         id="jobs",
@@ -240,7 +256,20 @@ def _short(sha: str | None) -> str:
     return (sha or "")[:8]
 
 
+def _move_control(repo_id: str, current_store_id: str | None, stores: list[dict]):
+    others = [s for s in stores if s["id"] != current_store_id]
+    if not others:
+        return ""
+    return Form(
+        Select(*[Option(s["name"], value=s["id"]) for s in others], name="store_id"),
+        Button("Move", cls="ghost"),
+        hx_post=f"/ui/move/{repo_id}", hx_target="#jobs", hx_swap="outerHTML",
+        cls="row",
+    )
+
+
 def archives_fragment():
+    stores = store.list_stores()
     rows = []
     for a in store.list_archives():
         badge = (
@@ -251,11 +280,13 @@ def archives_fragment():
         rows.append(
             Tr(
                 Td(A(a["repo_id"], href=f"https://huggingface.co/{a['repo_id']}", target="_blank", cls="link mono")),
+                Td(a.get("store_name") or "—", cls="muted"),
                 Td(human_size(a["size_bytes"]), cls="muted"),
                 Td(_short(a["sha"]), cls="mono muted"),
                 Td(badge),
                 Td(
                     Div(
+                        _move_control(a["repo_id"], a.get("store_id"), stores),
                         Button("Check", cls="ghost",
                                hx_post=f"/ui/check/{a['repo_id']}", hx_target="#archives", hx_swap="outerHTML"),
                         Button("Delete", cls="danger",
@@ -268,7 +299,7 @@ def archives_fragment():
         )
     body = (
         Table(
-            Thead(Tr(Th("Model"), Th("Size"), Th("Commit"), Th("Status"), Th("Actions"))),
+            Thead(Tr(Th("Model"), Th("Store"), Th("Size"), Th("Commit"), Th("Status"), Th("Actions"))),
             Tbody(*rows),
         )
         if rows
@@ -330,6 +361,7 @@ def page(*content, sess=None):
             Nav(
                 A("Home", href="/"),
                 A("Archives", href="/archives"),
+                A("Stores", href="/stores"),
                 A("Settings", href="/settings"),
                 A("Logout", href="/logout"),
             ),
@@ -341,6 +373,23 @@ def page(*content, sess=None):
 
 
 # --- pages ---------------------------------------------------------------
+
+def store_selector():
+    """Target-store control for new downloads (hidden input if there's only one)."""
+    stores = store.list_stores()
+    if len(stores) <= 1:
+        sid = stores[0]["id"] if stores else ""
+        return Input(type="hidden", id="target-store", name="store_id", value=sid)
+    default = next((s for s in stores if s["is_default"]), stores[0])
+    return Div(
+        Span("Target store: ", cls="muted"),
+        Select(
+            *[Option(s["name"], value=s["id"], selected=(s["id"] == default["id"])) for s in stores],
+            id="target-store", name="store_id",
+        ),
+        cls="row",
+    )
+
 
 @rt("/")
 def index(sess):
@@ -357,10 +406,10 @@ def index(sess):
     manual = Form(
         Input(type="text", name="repo_id", placeholder="org/model — archive by id"),
         Button("⤓ Archive"),
-        hx_post="/ui/archive", hx_target="#jobs", hx_swap="innerHTML",
+        hx_post="/ui/archive", hx_include="#target-store", hx_target="#jobs", hx_swap="innerHTML",
         cls="row",
     )
-    downloads = Div(H2("Downloads"), manual, jobs_fragment(), cls="card")
+    downloads = Div(H2("Downloads"), store_selector(), manual, jobs_fragment(), cls="card")
     blocks = []
     if hub.hf_token_source() == "none":
         blocks.append(Div(
@@ -473,12 +522,36 @@ def ui_search(req, sess, q: str = "", csrf: str = ""):
 
 
 @rt("/ui/archive", methods=["POST"])
-def ui_archive(req, sess, repo_id: str = "", csrf: str = ""):
+def ui_archive(req, sess, repo_id: str = "", store_id: str = "", csrf: str = ""):
     if not _guard_csrf(req, sess, csrf):
         return Div(P("Session expired, reload the page.", cls="err"), id="jobs")
     repo_id = repo_id.strip()
     if repo_id:
-        jobs.manager.start(repo_id)
+        jobs.manager.start_download(repo_id, store_id=store_id or None)
+    return jobs_fragment()
+
+
+@rt("/ui/move/{repo_id:path}", methods=["POST"])
+def ui_move(req, sess, repo_id: str, store_id: str = "", csrf: str = ""):
+    if _guard_csrf(req, sess, csrf) and store_id:
+        try:
+            jobs.manager.start_move(repo_id, store_id)
+        except KeyError:
+            pass
+    return jobs_fragment()
+
+
+@rt("/ui/jobs/{job_id}/pause", methods=["POST"])
+def ui_job_pause(req, sess, job_id: str, csrf: str = ""):
+    if _guard_csrf(req, sess, csrf):
+        jobs.manager.pause(job_id)
+    return jobs_fragment()
+
+
+@rt("/ui/jobs/{job_id}/resume", methods=["POST"])
+def ui_job_resume(req, sess, job_id: str, csrf: str = ""):
+    if _guard_csrf(req, sess, csrf):
+        jobs.manager.resume(job_id)
     return jobs_fragment()
 
 
@@ -523,6 +596,72 @@ def ui_delete(req, sess, repo_id: str, csrf: str = ""):
     if _guard_csrf(req, sess, csrf):
         jobs.delete_archive(repo_id)
     return archives_fragment()
+
+
+# --- data stores ---------------------------------------------------------
+
+def stores_fragment():
+    rows = []
+    for s in store.list_stores():
+        default_cell = (
+            Span("default", cls="badge current") if s["is_default"]
+            else Button("Make default", cls="ghost",
+                        hx_post=f"/ui/stores/{s['id']}/default", hx_target="#stores", hx_swap="outerHTML")
+        )
+        # A store can be deleted only when it's non-default and empty.
+        if s["is_default"] or s["n_models"]:
+            del_cell = Span("", cls="muted")
+        else:
+            del_cell = Button("Delete", cls="danger",
+                              hx_post=f"/ui/stores/{s['id']}/delete", hx_target="#stores", hx_swap="outerHTML",
+                              hx_confirm=f"Remove store '{s['name']}'? (files on disk are left untouched)")
+        rows.append(Tr(
+            Td(s["name"]),
+            Td(s["path"], cls="mono muted"),
+            Td(f"{s['n_models']}", cls="muted"),
+            Td(default_cell),
+            Td(del_cell),
+        ))
+    table = Table(
+        Thead(Tr(Th("Name"), Th("Path"), Th("Models"), Th("Default"), Th(""))),
+        Tbody(*rows),
+    )
+    add = Form(
+        Input(type="text", name="name", placeholder="name"),
+        Input(type="text", name="path", placeholder="/absolute/path"),
+        Button("Add store"),
+        hx_post="/ui/stores/add", hx_target="#stores", hx_swap="outerHTML",
+        cls="row",
+    )
+    return Div(H2("Data stores"), table, add, id="stores")
+
+
+@rt("/stores")
+def stores_page(sess):
+    return page(Div(stores_fragment(), cls="card"), sess=sess)
+
+
+@rt("/ui/stores/add", methods=["POST"])
+def ui_store_add(req, sess, name: str = "", path: str = "", csrf: str = ""):
+    if _guard_csrf(req, sess, csrf) and name.strip() and path.strip():
+        from pathlib import Path as _P
+        _P(path).mkdir(parents=True, exist_ok=True)
+        store.add_store(name.strip(), str(_P(path)))
+    return stores_fragment()
+
+
+@rt("/ui/stores/{store_id}/default", methods=["POST"])
+def ui_store_default(req, sess, store_id: str, csrf: str = ""):
+    if _guard_csrf(req, sess, csrf):
+        store.set_default_store(store_id)
+    return stores_fragment()
+
+
+@rt("/ui/stores/{store_id}/delete", methods=["POST"])
+def ui_store_delete(req, sess, store_id: str, csrf: str = ""):
+    if _guard_csrf(req, sess, csrf) and store.store_model_count(store_id) == 0:
+        store.delete_store(store_id)
+    return stores_fragment()
 
 
 # --- settings ------------------------------------------------------------
@@ -625,7 +764,8 @@ async def api_archive(req):
     if not repo_id:
         return JSONResponse({"error": "repo_id required"}, status_code=400)
     revision = (body.get("revision") or "main").strip()
-    job = jobs.manager.start(repo_id, revision)
+    store_id = (body.get("store_id") or "").strip() or None
+    job = jobs.manager.start_download(repo_id, revision, store_id=store_id)
     return JSONResponse({"job_id": job.id, "repo_id": repo_id})
 
 
@@ -635,6 +775,23 @@ def api_status(job_id: str):
     if not job:
         return JSONResponse({"error": "not found"}, status_code=404)
     return JSONResponse(job.as_dict())
+
+
+@rt("/api/jobs/{job_id}/pause", methods=["POST"])
+def api_job_pause(req):
+    jobs.manager.pause(req.path_params["job_id"])
+    return JSONResponse({"ok": True})
+
+
+@rt("/api/jobs/{job_id}/resume", methods=["POST"])
+def api_job_resume(req):
+    jobs.manager.resume(req.path_params["job_id"])
+    return JSONResponse({"ok": True})
+
+
+@rt("/api/stores", methods=["GET"])
+def api_stores():
+    return JSONResponse({"stores": store.list_stores()})
 
 
 @rt("/api/archives", methods=["GET"])
@@ -671,8 +828,9 @@ def api_archive_delete(req):
 
 def main() -> None:
     store.run_migrations()
+    store.ensure_default_store(str(ARCHIVE_DIR))  # default store lives in ~/.hugger
     _bootstrap_password()
-    jobs.manager.resume_pending()  # re-launch downloads interrupted by a restart
+    jobs.manager.resume_pending()  # re-launch downloads/moves interrupted by a restart
     import uvicorn
 
     print(f"hugger {VERSION} → http://{cfg.host}:{cfg.port}")
