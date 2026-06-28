@@ -61,6 +61,71 @@ def _csrf_value(req, form_val: str | None) -> str | None:
     return req.headers.get("x-csrf-token") or form_val
 
 
+# --- interactive UI helpers ----------------------------------------------
+
+def action_button(label: str, *, busy: str | None = None, **kw):
+    """A button that, while its HTMX request is in flight, recolors and shows a
+    busy label (e.g. "Download" -> "Downloading…"). CSS toggles idle/busy spans."""
+    if busy is None:
+        busy = label.rstrip(".… ") + "…"
+    return Button(Span(label, cls="idle"), Span(busy, cls="busy"), **kw)
+
+
+def modal(title: str, *content):
+    """Overlay wrapper; swapped into the page-level #modal container."""
+    return Div(
+        Div(
+            Div(H3(title),
+                Button("✕", cls="modal-close", hx_get="/ui/close",
+                       hx_target="#modal", hx_swap="innerHTML"),
+                cls="modal-head"),
+            *content,
+            cls="modal-card",
+        ),
+        cls="modal-overlay",
+    )
+
+
+def _modal_close_oob():
+    """Out-of-band empty #modal to dismiss the modal after an action."""
+    return Div(id="modal", hx_swap_oob="true")
+
+
+def file_list(files: list[dict], *, action: str, submit_buttons: list, hidden: dict | None = None,
+              preselect=None, statuses: dict | None = None, removable_repo: str | None = None):
+    """Reusable file picker: checkbox + path + size, optional status + per-file
+    remove. `files` items: {path, size}. Returns a Form posting to `action`."""
+    preselect = preselect if preselect is not None else {f["path"] for f in files}
+    head = [Th(""), Th("File"), Th("Size")]
+    if statuses is not None:
+        head.append(Th("Status"))
+    if removable_repo:
+        head.append(Th(""))
+    rows = []
+    for f in files:
+        cells = [
+            Td(Input(type="checkbox", name="files", value=f["path"], checked=f["path"] in preselect)),
+            Td(f["path"], cls="mono"),
+            Td(human_size(f["size"]), cls="muted"),
+        ]
+        status = statuses.get(f["path"]) if statuses is not None else None
+        if statuses is not None:
+            ok = status in ("downloaded", "unchanged")
+            cells.append(Td(Span(status, cls="badge current" if ok else "badge update")))
+        if removable_repo:
+            rm = (action_button("Remove", cls="danger", hx_post=f"/ui/file-remove/{removable_repo}",
+                                 hx_vals=json.dumps({"path": f["path"]}), hx_target="#managelist", hx_swap="outerHTML")
+                  if status == "downloaded" else "")
+            cells.append(Td(rm))
+        rows.append(Tr(*cells))
+    return Form(
+        *[Input(type="hidden", name=k, value=v) for k, v in (hidden or {}).items()],
+        Div(Table(Thead(Tr(*head)), Tbody(*rows)), cls="filelist"),
+        Div(*submit_buttons, cls="row"),
+        hx_post=action, hx_target="#jobs", hx_swap="outerHTML",
+    )
+
+
 # --- security middleware -------------------------------------------------
 
 class SecurityHeaders(BaseHTTPMiddleware):
@@ -164,6 +229,26 @@ THEME = Style(
     .notice{background:#FFF3E0;border:1px solid var(--accent);border-left:5px solid var(--accent);
       border-radius:8px;padding:.7rem 1rem;margin-bottom:1.2rem;color:var(--ink)}
     .notice a{color:var(--accent-2);font-weight:700}
+    /* interactive buttons: while their request is in flight, recolor + show busy label */
+    button{transition:background .12s ease}
+    button .busy{display:none}
+    button.htmx-request{background:var(--accent-2);cursor:progress}
+    button.htmx-request.danger{background:#B71C1C}
+    a.btn{text-decoration:none;display:inline-block;font-size:.95rem}
+    a.btn.ghost{background:transparent;color:var(--accent-2);border:1px solid var(--accent)}
+    button.htmx-request .idle{display:none}
+    button.htmx-request .busy{display:inline}
+    /* modal */
+    .modal-overlay{position:fixed;inset:0;background:rgba(40,20,0,.45);display:flex;
+      align-items:center;justify-content:center;z-index:1000;padding:1rem}
+    .modal-card{background:var(--bg);border:1px solid var(--surface-2);border-radius:14px;
+      max-width:680px;width:100%;max-height:86vh;overflow:auto;padding:1.2rem 1.4rem;
+      box-shadow:0 24px 70px rgba(0,0,0,.4)}
+    .modal-head{display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:.4rem}
+    .modal-head h3{margin:0;color:var(--accent-2)}
+    .modal-close{background:transparent;color:var(--muted);font-size:1.3rem;line-height:1;padding:.1rem .5rem}
+    .modal-close:hover{background:var(--surface-2)}
+    .filelist{max-height:48vh;overflow:auto;margin:.4rem 0}
     """
 )
 
@@ -189,12 +274,12 @@ def search_results(models: list[dict]):
                 Td(f"{m['downloads']:,}", cls="muted"),
                 Td(f"♥ {m['likes']}", cls="muted"),
                 Td(
-                    Button(
-                        "⤓ Archive…",
+                    action_button(
+                        "⤓ Archive…", busy="Opening…",
                         hx_get="/ui/files",
                         hx_vals=json.dumps({"repo_id": m["id"]}),
                         hx_include="#target-store",
-                        hx_target="#picker",
+                        hx_target="#modal",
                         hx_swap="innerHTML",
                     )
                 ),
@@ -218,16 +303,16 @@ def jobs_fragment(notice: str | None = None):
         kind = "⇄ move" if j.type == "move" else "⤓ download"
         controls = []
         if j.status == "paused":
-            controls.append(Button("Resume", cls="ghost", hx_post=f"/ui/jobs/{j.id}/resume",
-                                   hx_target="#jobs", hx_swap="outerHTML"))
+            controls.append(action_button("Resume", cls="ghost", hx_post=f"/ui/jobs/{j.id}/resume",
+                                          hx_target="#jobs", hx_swap="outerHTML"))
             if j.type == "download":  # only paused downloads can re-pick files
-                controls.append(Button("Edit files", cls="ghost",
-                                       hx_get=f"/ui/jobs/{j.id}/files",
-                                       hx_target="#picker", hx_swap="innerHTML"))
+                controls.append(action_button("Edit files", busy="Opening…",
+                                              hx_get=f"/ui/jobs/{j.id}/files",
+                                              hx_target="#modal", hx_swap="innerHTML"))
             state = Span(" paused", cls="muted")
         else:
-            controls.append(Button("Pause", cls="ghost", hx_post=f"/ui/jobs/{j.id}/pause",
-                                   hx_target="#jobs", hx_swap="outerHTML"))
+            controls.append(action_button("Pause", cls="ghost", hx_post=f"/ui/jobs/{j.id}/pause",
+                                          hx_target="#jobs", hx_swap="outerHTML"))
             state = Span(f" {j.percent}%", cls="muted")
         items.append(
             Div(
@@ -270,7 +355,7 @@ def _move_control(repo_id: str, current_store_id: str | None, stores: list[dict]
         return A("Move…", href="/stores", cls="link muted", title="Add another store to move into")
     return Form(
         Select(*[Option(s["name"], value=s["id"]) for s in others], name="store_id"),
-        Button("Move", cls="ghost"),
+        action_button("Move", cls="ghost"),
         hx_post=f"/ui/move/{repo_id}", hx_target="#jobs", hx_swap="outerHTML",
         cls="row",
     )
@@ -295,16 +380,15 @@ def archives_fragment():
                 Td(
                     Div(
                         _move_control(a["repo_id"], a.get("store_id"), stores),
-                        Button("Manage", cls="ghost",
-                               hx_get=f"/ui/manage/{a['repo_id']}", hx_target="#picker", hx_swap="innerHTML"),
-                        (Button("Update…", hx_get=f"/ui/update/{a['repo_id']}",
-                                hx_target="#picker", hx_swap="innerHTML")
+                        A("Manage", href=f"/manage/{a['repo_id']}", cls="btn ghost"),
+                        (action_button("Update…", busy="Checking…", hx_get=f"/ui/update/{a['repo_id']}",
+                                       hx_target="#modal", hx_swap="innerHTML")
                          if a["update_available"] else
-                         Button("Check", cls="ghost",
-                                hx_post=f"/ui/check/{a['repo_id']}", hx_target="#archives", hx_swap="outerHTML")),
-                        Button("Delete", cls="danger",
-                               hx_post=f"/ui/delete/{a['repo_id']}", hx_target="#archives", hx_swap="outerHTML",
-                               hx_confirm=f"Delete archive {a['repo_id']} from disk?"),
+                         action_button("Check", hx_post=f"/ui/check/{a['repo_id']}",
+                                       hx_target="#archives", hx_swap="outerHTML", cls="ghost")),
+                        action_button("Delete", cls="danger",
+                                      hx_post=f"/ui/delete/{a['repo_id']}", hx_target="#archives", hx_swap="outerHTML",
+                                      hx_confirm=f"Delete archive {a['repo_id']} from disk?"),
                         cls="row",
                     )
                 ),
@@ -320,7 +404,7 @@ def archives_fragment():
     )
     header = Div(
         H2("Archived models"),
-        Button("Check all for updates", cls="ghost",
+        action_button("Check all for updates", busy="Checking…", cls="ghost",
                hx_post="/ui/check-all", hx_target="#archives", hx_swap="outerHTML"),
         cls="row",
     )
@@ -380,9 +464,15 @@ def page(*content, sess=None):
             ),
         ),
         Main(*content),
+        Div(id="modal"),  # action modals (file lists) render here
         id="app",
         hx_headers=json.dumps({"X-CSRF-Token": csrf}),
     )
+
+
+@rt("/ui/close", methods=["GET"])
+def ui_close():
+    return Div(id="modal")
 
 
 # --- pages ---------------------------------------------------------------
@@ -410,7 +500,7 @@ def index(sess):
         H2("Find a model"),
         Form(
             Input(type="text", name="q", placeholder="e.g. llama, bert, whisper…"),
-            Button("Search"),
+            action_button("Search"),
             hx_post="/ui/search", hx_target="#search-results", hx_swap="outerHTML",
         ),
         Div(id="search-results"),
@@ -418,13 +508,12 @@ def index(sess):
     )
     manual = Form(
         Input(type="text", name="repo_id", placeholder="org/model — archive by id"),
-        Button("⤓ Archive…"),
-        hx_get="/ui/files", hx_include="#target-store", hx_target="#picker", hx_swap="innerHTML",
+        action_button("⤓ Archive…", busy="Opening…"),
+        hx_get="/ui/files", hx_include="#target-store", hx_target="#modal", hx_swap="innerHTML",
         cls="row",
     )
     downloads = Div(
-        H2("Downloads"), store_selector(), manual,
-        Div(id="picker"), jobs_fragment(), cls="card",
+        H2("Downloads"), store_selector(), manual, jobs_fragment(), cls="card",
     )
     blocks = []
     if hub.hf_token_source() == "none":
@@ -444,7 +533,6 @@ def archives_page(sess):
     # their progress is visible right here.
     return page(
         Div(archives_fragment(), cls="card"),
-        Div(id="picker"),  # manage / edit-files / update panels render here
         Div(H2("Jobs"), jobs_fragment(), cls="card"),
         sess=sess,
     )
@@ -548,34 +636,27 @@ def ui_search(req, sess, q: str = "", csrf: str = ""):
 def ui_files(req, sess, repo_id: str = "", store_id: str = ""):
     repo_id = repo_id.strip()
     if not repo_id:
-        return Div(id="picker")
+        return Div(id="modal")
     try:
         info = hub.repo_files(repo_id)
     except Exception as e:
-        return Div(P(f"Could not list files for {repo_id}: {e}", cls="err"), id="picker")
+        return modal("Archive", P(f"Could not list files for {repo_id}: {e}", cls="err"))
     rec = store.get_archive(repo_id)
-    meta = metadata.read(rec["path"]) if rec else None
-    rows = []
-    for f in info["files"]:
-        have = bool(meta) and metadata.file_downloaded(rec["path"], f["path"], f["size"])
-        rows.append(Tr(
-            Td(Input(type="checkbox", name="files", value=f["path"], checked=True)),
-            Td(f["path"], cls="mono"),
-            Td(human_size(f["size"]), cls="muted"),
-            Td(Span("✓ downloaded", cls="badge current") if have else "", cls="muted"),
-        ))
-    form = Form(
-        Input(type="hidden", name="repo_id", value=repo_id),
-        Input(type="hidden", name="store_id", value=store_id),
-        Table(Thead(Tr(Th(""), Th("File"), Th("Size"), Th(""))), Tbody(*rows)),
-        Div(
-            Button("⤓ Download all", name="mode", value="all"),
-            Button("⤓ Download selected", name="mode", value="selected", cls="ghost"),
-            cls="row",
-        ),
-        hx_post="/ui/archive", hx_target="#jobs", hx_swap="outerHTML",
+    statuses = None
+    if rec:
+        statuses = {
+            f["path"]: ("downloaded" if metadata.file_downloaded(rec["path"], f["path"], f["size"]) else "missing")
+            for f in info["files"]
+        }
+    form = file_list(
+        info["files"], action="/ui/archive",
+        hidden={"repo_id": repo_id, "store_id": store_id}, statuses=statuses,
+        submit_buttons=[
+            action_button("⤓ Download all", name="mode", value="all"),
+            action_button("⤓ Download selected", name="mode", value="selected", cls="ghost"),
+        ],
     )
-    return Div(H3(f"Files in {repo_id}"), form, id="picker")
+    return modal(f"Archive {repo_id}", form)
 
 
 @rt("/ui/archive", methods=["POST"])
@@ -589,11 +670,11 @@ async def ui_archive(req, sess):
     if repo_id:
         try:
             jobs.manager.start_download(repo_id, store_id=store_id, selected=selected)
-        except jobs.InsufficientSpace as e:
+        except (jobs.InsufficientSpace, jobs.Busy) as e:
             return jobs_fragment(notice=f"⚠️ {e}")
         except Exception as e:
             return jobs_fragment(notice=f"⚠️ {type(e).__name__}: {e}")
-    return jobs_fragment()
+    return jobs_fragment(), _modal_close_oob()
 
 
 @rt("/ui/move/{repo_id:path}", methods=["POST"])
@@ -626,25 +707,19 @@ def ui_job_resume(req, sess, job_id: str, csrf: str = ""):
 def ui_job_files(req, sess, job_id: str):
     job = jobs.manager.get(job_id)
     if not job or job.type != "download":
-        return Div(id="picker")
+        return Div(id="modal")
     try:
         info = hub.repo_files(job.repo_id, job.revision)
     except Exception as e:
-        return Div(P(f"Could not list files: {e}", cls="err"), id="picker")
+        return modal("Edit files", P(f"Could not list files: {e}", cls="err"))
     st = store.get_store(job.store_id)
     meta = metadata.read(jobs.store_repo_path(st["path"], job.repo_id)) if st else None
     selected = set(meta["selected"]) if meta else {f["path"] for f in info["files"]}
-    rows = [
-        Tr(Td(Input(type="checkbox", name="files", value=f["path"], checked=f["path"] in selected)),
-           Td(f["path"], cls="mono"), Td(human_size(f["size"]), cls="muted"))
-        for f in info["files"]
-    ]
-    form = Form(
-        Table(Thead(Tr(Th(""), Th("File"), Th("Size"))), Tbody(*rows)),
-        Button("Save selection"),
-        hx_post=f"/ui/jobs/{job_id}/files", hx_target="#jobs", hx_swap="outerHTML",
+    form = file_list(
+        info["files"], action=f"/ui/jobs/{job_id}/files", preselect=selected,
+        submit_buttons=[action_button("Save selection")],
     )
-    return Div(H3(f"Files for paused download {job.repo_id}"), form, id="picker")
+    return modal(f"Files for paused download · {job.repo_id}", form)
 
 
 @rt("/ui/jobs/{job_id}/files", methods=["POST"])
@@ -652,41 +727,50 @@ async def ui_job_files_save(req, sess):
     form = await req.form()
     if auth.csrf_ok(sess, _csrf_value(req, form.get("csrf"))):
         jobs.manager.update_selected(req.path_params["job_id"], form.getlist("files"))
-    return jobs_fragment()
+    return jobs_fragment(), _modal_close_oob()
 
 
-@rt("/ui/manage/{repo_id:path}", methods=["GET"])
-def ui_manage(req, sess, repo_id: str):
+def manage_list_fragment(repo_id: str):
+    """The reusable file list for the manage page (download missing / remove)."""
     rec = store.get_archive(repo_id)
     if not rec:
-        return Div(P("Not archived.", cls="muted"), id="picker")
+        return Div(P("Not archived.", cls="muted"), id="managelist")
     try:
         info = hub.repo_files(repo_id, rec["revision"])
     except Exception as e:
-        return Div(P(f"Could not list files: {e}", cls="err"), id="picker")
-    model_dir = rec["path"]
-    rows = []
-    for f in info["files"]:
-        have = metadata.file_downloaded(model_dir, f["path"], f["size"])
-        actions = (
-            Button("Remove", cls="danger", hx_post=f"/ui/file-remove/{repo_id}",
-                   hx_vals=json.dumps({"path": f["path"]}), hx_target="#picker", hx_swap="innerHTML")
-            if have else ""
-        )
-        rows.append(Tr(
-            Td(Input(type="checkbox", name="files", value=f["path"], checked=not have)),
-            Td(f["path"], cls="mono"),
-            Td(human_size(f["size"]), cls="muted"),
-            Td(Span("✓ downloaded", cls="badge current") if have else Span("missing", cls="muted")),
-            Td(actions),
-        ))
-    form = Form(
-        Table(Thead(Tr(Th(""), Th("File"), Th("Size"), Th("Status"), Th(""))), Tbody(*rows)),
-        Button("⤓ Download selected"),
-        hx_post=f"/ui/manage/{repo_id}", hx_target="#jobs", hx_swap="outerHTML",
+        return Div(P(f"Could not list files: {e}", cls="err"), id="managelist")
+    statuses = {
+        f["path"]: ("downloaded" if metadata.file_downloaded(rec["path"], f["path"], f["size"]) else "missing")
+        for f in info["files"]
+    }
+    preselect = {p for p, s in statuses.items() if s == "missing"}  # default: fetch missing
+    form = file_list(
+        info["files"], action=f"/ui/manage/{repo_id}", statuses=statuses,
+        preselect=preselect, removable_repo=repo_id,
+        submit_buttons=[action_button("⤓ Download selected")],
     )
-    return Div(H3(f"Manage {repo_id}"), P(f"Store: {rec.get('store_name') or '—'}", cls="muted"),
-               form, id="picker")
+    return Div(form, id="managelist")
+
+
+@rt("/manage/{repo_id:path}", methods=["GET"])
+def manage_page(req, sess, repo_id: str):
+    rec = store.get_archive(repo_id)
+    if not rec:
+        return page(Div(P("Not archived.", cls="muted"), cls="card"), sess=sess)
+    info = Div(
+        H2(f"Manage {repo_id}"),
+        P("Store: ", Span(rec.get("store_name") or "—", cls="mono"),
+          " · ", Span(f"{rec['n_downloaded']}/{rec['n_files']} files", cls="muted"),
+          " · ", Span(human_size(rec["size_bytes"]), cls="muted")),
+        A("← Back to archives", href="/archives", cls="link"),
+        cls="card",
+    )
+    return page(
+        info,
+        Div(manage_list_fragment(repo_id), cls="card"),
+        Div(H2("Jobs"), jobs_fragment(), cls="card"),
+        sess=sess,
+    )
 
 
 @rt("/ui/manage/{repo_id:path}", methods=["POST"])
@@ -712,7 +796,7 @@ async def ui_file_remove(req, sess):
         path = form.get("path")
         if path:
             jobs.manager.remove_file(repo_id, path)
-    return ui_manage(req, sess, repo_id)
+    return manage_list_fragment(repo_id)
 
 
 @rt("/ui/update/{repo_id:path}", methods=["GET"])
@@ -720,30 +804,20 @@ def ui_update(req, sess, repo_id: str):
     try:
         v = jobs.manager.verify(repo_id)
     except KeyError:
-        return Div(P("Not archived.", cls="muted"), id="picker")
+        return modal("Update", P("Not archived.", cls="muted"))
     except Exception as e:
-        return Div(P(f"Verify failed: {e}", cls="err"), id="picker")
+        return modal("Update", P(f"Verify failed: {e}", cls="err"))
     changed = set(v["changed"]) | set(v["missing"])
-    rows = []
-    for f in v["files"]:
-        rows.append(Tr(
-            Td(Input(type="checkbox", name="files", value=f["path"], checked=f["path"] in changed)),
-            Td(f["path"], cls="mono"),
-            Td(human_size(f["size"]), cls="muted"),
-            Td(Span(f["status"], cls="badge update" if f["status"] != "unchanged" else "badge current")),
-        ))
-    n = len(changed)
-    buttons = [Button(f"⟳ Update changed ({n})", name="mode", value="selected")]
+    statuses = {f["path"]: f["status"] for f in v["files"]}
+    buttons = [action_button(f"⟳ Update changed ({len(changed)})", name="mode", value="selected")]
     if v["all_present"]:
-        buttons.append(Button("⟳ Re-download all", name="mode", value="all", cls="ghost"))
-    form = Form(
-        Input(type="hidden", name="repo_id", value=repo_id),
-        Table(Thead(Tr(Th(""), Th("File"), Th("Size"), Th("Change"))), Tbody(*rows)),
-        Div(*buttons, cls="row"),
-        hx_post=f"/ui/update/{repo_id}", hx_target="#jobs", hx_swap="outerHTML",
+        buttons.append(action_button("⟳ Re-download all", name="mode", value="all", cls="ghost"))
+    form = file_list(
+        v["files"], action=f"/ui/update/{repo_id}", hidden={"repo_id": repo_id},
+        statuses=statuses, preselect=changed, submit_buttons=buttons,
     )
-    return Div(H3(f"Update {repo_id}"),
-               P(f"{n} file(s) changed or missing.", cls="muted"), form, id="picker")
+    return modal(f"Update {repo_id}",
+                 P(f"{len(changed)} file(s) changed or missing.", cls="muted"), form)
 
 
 @rt("/ui/update/{repo_id:path}", methods=["POST"])
@@ -758,7 +832,7 @@ async def ui_update_apply(req, sess):
                 jobs.manager.start_download(repo_id, rec["revision"], store_id=rec["store_id"], selected=selected)
             except (jobs.InsufficientSpace, jobs.Busy) as e:
                 return jobs_fragment(notice=f"⚠️ {e}")
-    return jobs_fragment()
+    return jobs_fragment(), _modal_close_oob()
 
 
 @rt("/ui/jobs", methods=["GET"])
@@ -811,22 +885,22 @@ def stores_fragment(notice: str | None = None):
     for s in store.list_stores():
         default_cell = (
             Span("default", cls="badge current") if s["is_default"]
-            else Button("Make default", cls="ghost",
-                        hx_post=f"/ui/stores/{s['id']}/default", hx_target="#stores", hx_swap="outerHTML")
+            else action_button("Make default", cls="ghost",
+                               hx_post=f"/ui/stores/{s['id']}/default", hx_target="#stores", hx_swap="outerHTML")
         )
         try:
             free = util.human_size(util.free_space(s["path"]))
         except Exception:
             free = "—"
         actions = [
-            Button("Import", cls="ghost",
-                   hx_post=f"/ui/stores/{s['id']}/import", hx_target="#stores", hx_swap="outerHTML"),
+            action_button("Import", busy="Importing…", cls="ghost",
+                          hx_post=f"/ui/stores/{s['id']}/import", hx_target="#stores", hx_swap="outerHTML"),
         ]
         # A store can be deleted only when it's non-default and empty.
         if not s["is_default"] and not s["n_models"]:
-            actions.append(Button("Delete", cls="danger",
-                                  hx_post=f"/ui/stores/{s['id']}/delete", hx_target="#stores", hx_swap="outerHTML",
-                                  hx_confirm=f"Remove store '{s['name']}'? (files on disk are left untouched)"))
+            actions.append(action_button("Delete", cls="danger",
+                                         hx_post=f"/ui/stores/{s['id']}/delete", hx_target="#stores", hx_swap="outerHTML",
+                                         hx_confirm=f"Remove store '{s['name']}'? (files on disk are left untouched)"))
         rows.append(Tr(
             Td(s["name"]),
             Td(s["path"], cls="mono muted"),
@@ -842,7 +916,7 @@ def stores_fragment(notice: str | None = None):
     add = Form(
         Input(type="text", name="name", placeholder="name"),
         Input(type="text", name="path", placeholder="/absolute/path"),
-        Button("Add store"),
+        action_button("Add store", busy="Adding…"),
         hx_post="/ui/stores/add", hx_target="#stores", hx_swap="outerHTML",
         cls="row",
     )
