@@ -362,7 +362,6 @@ def _move_control(repo_id: str, current_store_id: str | None, stores: list[dict]
 
 
 def archives_fragment():
-    stores = store.list_stores()
     rows = []
     for a in store.list_archives():
         badge = (
@@ -379,7 +378,6 @@ def archives_fragment():
                 Td(badge),
                 Td(
                     Div(
-                        _move_control(a["repo_id"], a.get("store_id"), stores),
                         A("Manage", href=f"/manage/{a['repo_id']}", cls="btn ghost"),
                         (action_button("Update…", busy="Checking…", hx_get=f"/ui/update/{a['repo_id']}",
                                        hx_target="#modal", hx_swap="innerHTML")
@@ -757,11 +755,13 @@ def manage_page(req, sess, repo_id: str):
     rec = store.get_archive(repo_id)
     if not rec:
         return page(Div(P("Not archived.", cls="muted"), cls="card"), sess=sess)
+    move = _move_control(repo_id, rec.get("store_id"), store.list_stores())
     info = Div(
         H2(f"Manage {repo_id}"),
         P("Store: ", Span(rec.get("store_name") or "—", cls="mono"),
           " · ", Span(f"{rec['n_downloaded']}/{rec['n_files']} files", cls="muted"),
           " · ", Span(human_size(rec["size_bytes"]), cls="muted")),
+        Div(Span("Move to another store: ", cls="muted"), move, cls="row"),
         A("← Back to archives", href="/archives", cls="link"),
         cls="card",
     )
