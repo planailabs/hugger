@@ -13,31 +13,13 @@ async function load() {
   $("token").value = cfg.token;
 }
 
-// Request host permission for non-localhost servers so the background worker can
-// fetch cross-origin (needed when hugger is exposed over the internet).
-async function ensurePermission(serverUrl) {
-  try {
-    const u = new URL(serverUrl);
-    const origin = `${u.protocol}//${u.hostname}/*`;
-    const has = await chrome.permissions.contains({ origins: [origin] });
-    if (has) return true;
-    return await chrome.permissions.request({ origins: [origin] });
-  } catch {
-    return false;
-  }
-}
-
+// The extension holds http/https host access (granted at install), so it can
+// reach any server you configure — no per-origin runtime permission step.
 $("save").addEventListener("click", async () => {
   const serverUrl = $("serverUrl").value.trim().replace(/\/+$/, "");
   const token = $("token").value.trim();
   if (!serverUrl || !token) {
     setStatus("Enter both a server URL and a token.", "err");
-    return;
-  }
-  setStatus("Requesting permission…");
-  const granted = await ensurePermission(serverUrl);
-  if (!granted) {
-    setStatus("Permission for that server was denied.", "err");
     return;
   }
   await chrome.storage.sync.set({ serverUrl, token });

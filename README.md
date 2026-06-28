@@ -108,8 +108,9 @@ The app is built to be internet-facing:
    when a newer revision exists) once it's archived.
 
 The extension's background worker holds the token and makes the authenticated
-call (so the server never needs to allow page-origin CORS). For a non-localhost
-server it requests host permission for that origin when you save. The manifest
+call (so the server never needs to allow page-origin CORS). It holds http/https
+host access (granted at install) so it can reach **any** server you configure —
+localhost or a public HTTPS deployment — with no per-origin permission step. The manifest
 ships both `background.service_worker` (Chrome) and `background.scripts` (Firefox)
 so the same unpacked extension loads in either browser. It also declares
 `gecko_android`, so AMO offers it for **Firefox for Android** (test on a device
