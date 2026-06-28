@@ -133,6 +133,22 @@ def test_stores_crud():
     assert store.get_store(b) is None
 
 
+def test_store_path_conflict_rejected():
+    store.ensure_default_store(str(Path(_TMP) / "archives"))
+    p = str(Path(_TMP) / "shared-store")
+    store.add_store("s-a", p)
+    for bad in (p, str(Path(p) / "nested"), str(Path(p).parent)):
+        raised = False
+        try:
+            store.add_store("dup", bad)
+        except ValueError:
+            raised = True
+        assert raised, f"expected conflict for {bad}"
+    # clean up
+    sid = next(s["id"] for s in store.list_stores() if s["name"] == "s-a")
+    store.delete_store(sid)
+
+
 def _make_archive(store_id, repo_id, files):
     st = store.get_store(store_id)
     p = jobs.store_repo_path(st["path"], repo_id)

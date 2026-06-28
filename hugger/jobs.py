@@ -258,6 +258,10 @@ class JobManager:
             src = Path(rec["path"])
             dest = store_repo_path(dest_store["path"], job.repo_id)
             if src.resolve() == dest.resolve():
+                # Same location (e.g. stores share a path) — nothing to copy, but
+                # still record the new store ownership so the DB isn't left stale.
+                self._cache_archive(job.repo_id, metadata.read(dest) or {}, dest,
+                                    job.store_id, fallback=rec)
                 job.status = "done"; job.persist(); return
 
             files = [p for p in src.rglob("*") if p.is_file() and not p.is_symlink()]

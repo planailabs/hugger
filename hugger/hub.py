@@ -67,9 +67,22 @@ def remote_sha(repo_id: str, revision: str = "main") -> str:
 
 
 def repo_files(repo_id: str, revision: str = "main") -> dict:
-    """Commit sha + the repo's files with sizes — for the download file picker."""
+    """Commit sha + the repo's files with sizes and integrity hashes.
+
+    Each file carries `lfs` (bool) and `rhash` — the Hub's expected hash: sha256
+    for LFS files, the git blob sha1 (blob_id) for regular files."""
     info = _api().model_info(repo_id, revision=revision, files_metadata=True)
-    files = [{"path": s.rfilename, "size": (s.size or 0)} for s in (info.siblings or [])]
+    files = []
+    for s in (info.siblings or []):
+        lfs = getattr(s, "lfs", None)
+        if lfs:
+            rhash = lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None)
+        else:
+            rhash = getattr(s, "blob_id", None)
+        files.append({
+            "path": s.rfilename, "size": (s.size or 0),
+            "lfs": bool(lfs), "rhash": rhash,
+        })
     return {"sha": info.sha, "files": files}
 
 

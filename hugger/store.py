@@ -124,12 +124,38 @@ def ensure_default_store(path: str) -> str:
         return sid
 
 
+def _norm(path: str) -> str:
+    return str(Path(path).expanduser().resolve())
+
+
+def _overlaps(a: str, b: str) -> bool:
+    """True if normalized paths are equal or one contains the other."""
+    pa, pb = Path(a), Path(b)
+    return pa == pb or pa.is_relative_to(pb) or pb.is_relative_to(pa)
+
+
+def path_conflict(path: str, exclude_id: str | None = None) -> dict | None:
+    """Return an existing store whose path equals/overlaps `path`, else None.
+    Two stores sharing a path break moves (src == dest), so this is enforced."""
+    np = _norm(path)
+    for s in list_stores():
+        if s["id"] == exclude_id:
+            continue
+        if _overlaps(np, _norm(s["path"])):
+            return s
+    return None
+
+
 def add_store(name: str, path: str) -> str:
+    npath = _norm(path)
+    conflict = path_conflict(npath)
+    if conflict:
+        raise ValueError(f"path overlaps existing store '{conflict['name']}' ({conflict['path']})")
     sid = _id()
     with closing(_connect()) as conn, conn:
         conn.execute(
             "INSERT INTO stores (id, name, path, is_default, created_at) VALUES (?,?,?,0,?)",
-            (sid, name, path, _now()),
+            (sid, name, npath, _now()),
         )
     return sid
 

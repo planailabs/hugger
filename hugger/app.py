@@ -719,7 +719,10 @@ def ui_store_add(req, sess, name: str = "", path: str = "", csrf: str = ""):
             util.check_writable(p)  # creates the dir and verifies it's writable
         except OSError as e:
             return stores_fragment(notice=f"⚠️ {path} is not writable: {e}")
-        store.add_store(name.strip(), p)
+        try:
+            store.add_store(name.strip(), p)  # rejects paths overlapping another store
+        except ValueError as e:
+            return stores_fragment(notice=f"⚠️ {e}")
     return stores_fragment()
 
 

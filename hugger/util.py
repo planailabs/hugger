@@ -1,10 +1,37 @@
 """Small filesystem helpers: directory size, free space, writability."""
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import tempfile
 from pathlib import Path
+
+_CHUNK = 1024 * 1024
+
+
+def sha256_file(path: Path | str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(_CHUNK), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def gitblob_sha1(path: Path | str) -> str:
+    """Git blob SHA-1 (matches the Hub's blob_id for non-LFS files):
+    sha1(b"blob <size>\\0" + content)."""
+    size = os.path.getsize(path)
+    h = hashlib.sha1()
+    h.update(f"blob {size}\0".encode())
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(_CHUNK), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def hash_file(path: Path | str, algo: str) -> str:
+    return sha256_file(path) if algo == "sha256" else gitblob_sha1(path)
 
 
 def dir_size(path: Path | str) -> int:
