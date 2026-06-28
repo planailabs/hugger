@@ -333,6 +333,11 @@ def jobs_fragment(notice: str | None = None):
     # Poll while anything is running; paused jobs don't need polling.
     poll = "load, every 1s" if any(j.status in ("queued", "running") for j in active) else "none"
     inner = items or [P("No active jobs.", cls="muted")]
+    if any(j.type == "download" and j.status in ("queued", "running") for j in active):
+        inner.append(P("ℹ︎ Download progress is reported by huggingface_hub: "
+                       "per-chunk on the classic path, in ~64 MB steps over Xet — "
+                       "so large files advance in jumps. (Set HF_HUB_DISABLE_XET=1 "
+                       "for finer steps.)", cls="muted"))
     if notice:
         inner = [P(notice, cls="err"), *inner]
     return Div(
