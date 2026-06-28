@@ -111,7 +111,9 @@ The extension's background worker holds the token and makes the authenticated
 call (so the server never needs to allow page-origin CORS). For a non-localhost
 server it requests host permission for that origin when you save. The manifest
 ships both `background.service_worker` (Chrome) and `background.scripts` (Firefox)
-so the same unpacked extension loads in either browser.
+so the same unpacked extension loads in either browser. It also declares
+`gecko_android`, so AMO offers it for **Firefox for Android** (test on a device
+with `web-ext run --target=firefox-android`).
 
 ### Publishing
 
