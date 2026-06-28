@@ -261,7 +261,8 @@ def _short(sha: str | None) -> str:
 def _move_control(repo_id: str, current_store_id: str | None, stores: list[dict]):
     others = [s for s in stores if s["id"] != current_store_id]
     if not others:
-        return ""
+        # Nowhere to move to yet — point the user at adding a store.
+        return A("Move…", href="/stores", cls="link muted", title="Add another store to move into")
     return Form(
         Select(*[Option(s["name"], value=s["id"]) for s in others], name="store_id"),
         Button("Move", cls="ghost"),
@@ -429,7 +430,13 @@ def index(sess):
 
 @rt("/archives")
 def archives_page(sess):
-    return page(Div(archives_fragment(), cls="card"), sess=sess)
+    # Include the jobs panel so Move actions (which swap #jobs) have a target and
+    # their progress is visible right here.
+    return page(
+        Div(archives_fragment(), cls="card"),
+        Div(H2("Jobs"), jobs_fragment(), cls="card"),
+        sess=sess,
+    )
 
 
 @rt("/login", methods=["GET"])
