@@ -140,6 +140,27 @@ def test_non_xet_returns_false():
         assert not (Path(d) / PLAIN_FILE).exists()  # caller handles non-Xet files
 
 
+def test_download_all_shared_group():
+    """Several Xet files stream through one group; non-Xet files are returned for
+    the classic path, not fetched here. One file is pre-seeded to prove resume
+    works through the batched path too."""
+    if not ONLINE:
+        return _skip("test_download_all_shared_group")
+    from huggingface_hub import hf_hub_download
+    xet_a, xet_b = "model.safetensors", XET_FILE  # two distinct Xet files
+    ref_a = Path(hf_hub_download(REPO, filename=xet_a))
+    ref_b = _reference()
+    with tempfile.TemporaryDirectory() as d:
+        # seed file B with the real first half — must resume, not restart
+        part_b = Path(d) / (xet_b + xd.PART_SUFFIX)
+        part_b.write_bytes(ref_b.read_bytes()[: ref_b.stat().st_size // 2])
+        classic = xd.download_all(REPO, "main", [xet_a, xet_b, PLAIN_FILE], d, token=None)
+        assert classic == [PLAIN_FILE], classic
+        assert not (Path(d) / PLAIN_FILE).exists()  # non-Xet not handled here
+        assert _sha(Path(d) / xet_a) == _sha(ref_a)
+        assert _sha(Path(d) / xet_b) == _sha(ref_b)
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

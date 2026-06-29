@@ -57,13 +57,14 @@ def main() -> int:
         pass
     _ProgressTqdm.path = str(pf)
     if _xet_download.enabled():
-        # Per-file loop so each Xet file resumes from its `.xetpart` on disk.
-        # Progress is tracked by the parent from the filesystem (completed files
-        # + `*.xetpart`/`*.incomplete`), so no tqdm hook is needed here.
-        token = hub.current_hf_token()
-        for rel in (allow or [f["path"] for f in (meta.get("files") or [])]):
-            if not _xet_download.download_file(repo_id, revision, rel, dest, token):
-                hub.download_one(repo_id, revision, Path(dest), rel)  # not Xet -> classic
+        # Xet files stream through one shared group (resume + cross-file chunk
+        # reuse); the rest fall back to the classic path. Progress is tracked by
+        # the parent from the filesystem (completed files + `*.xetpart`/
+        # `*.incomplete`), so no tqdm hook is needed here.
+        rels = allow or [f["path"] for f in (meta.get("files") or [])]
+        classic = _xet_download.download_all(repo_id, revision, rels, dest, hub.current_hf_token())
+        for rel in classic:
+            hub.download_one(repo_id, revision, Path(dest), rel)
         return 0
     hub.download(repo_id, revision, Path(dest), allow_patterns=allow, tqdm_class=_ProgressTqdm)
     return 0
