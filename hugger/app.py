@@ -283,12 +283,29 @@ THEME = Style(
     """
 )
 
+# Make every form's submit button show busy feedback. htmx puts `htmx-request`
+# on the *form* (or a standalone hx button), not on a submit button inside a
+# form — so those buttons never recolor/swap label. Add the class to the
+# submitter on submit (covers plain full-page forms and htmx forms alike) and
+# clear it again when htmx finishes, so htmx forms don't stick on "busy".
+BUSY_FEEDBACK = Script(
+    "document.addEventListener('submit',function(e){"
+    "var b=e.submitter;"
+    "if(b&&b.tagName==='BUTTON')b.classList.add('htmx-request');"
+    "},true);"
+    "document.body.addEventListener('htmx:afterRequest',function(e){"
+    "var t=e.target;"
+    "if(t&&t.querySelectorAll)t.querySelectorAll('button.htmx-request')"
+    ".forEach(function(b){b.classList.remove('htmx-request');});"
+    "});"
+)
+
 app, rt = fast_app(
     secret_key=cfg.secret_key,
     before=beforeware,
     middleware=_middleware(),
     pico=False,
-    hdrs=(THEME,),
+    hdrs=(THEME, BUSY_FEEDBACK),
     # On graceful shutdown, mark in-flight jobs queued (not failed) so they resume.
     on_shutdown=[jobs.manager.shutdown],
 )
@@ -364,8 +381,11 @@ def jobs_fragment(notice: str | None = None):
             items.append(Div(Span(j.repo_id, cls="mono"), Span(f" {_job_verb(j)} failed: ", cls="err"), Span(j.error or "", cls="err"), cls="job"))
         else:
             items.append(Div(Span("✓ ", cls=""), Span(j.repo_id, cls="mono"), Span(f" {_job_verb(j)}d", cls="muted"), cls="job"))
-    # Poll while anything is running; paused jobs don't need polling.
-    poll = "load, every 1s" if any(j.status in ("queued", "running") for j in active) else "none"
+    # Poll while anything is running; paused jobs don't need polling. NB: no
+    # `load` here — #jobs swaps itself via outerHTML, and a `load` trigger would
+    # re-fire on every swap (a hot reload loop that clobbers the buttons mid-click,
+    # making Pause feel dead). `every 1s` alone is enough.
+    poll = "every 1s" if any(j.status in ("queued", "running") for j in active) else "none"
     inner = items or [P("No active jobs.", cls="muted")]
     if any(j.type == "download" and j.status in ("queued", "running") for j in active):
         inner.append(P("ℹ︎ Download progress is reported by huggingface_hub: "
@@ -380,6 +400,9 @@ def jobs_fragment(notice: str | None = None):
         hx_get="/ui/jobs",
         hx_trigger=poll,
         hx_swap="outerHTML",
+        # Coalesce overlapping polls and let a user action (Pause/Resume) abort an
+        # in-flight poll so it isn't clobbered mid-request.
+        hx_sync="this:replace",
     )
 
 
@@ -586,7 +609,7 @@ def login_form(req, error: str = ""):
                 msg,
                 Form(
                     Input(type="password", name="password", placeholder="password", autofocus=True),
-                    Button("Sign in"),
+                    action_button("Sign in", busy="Signing in…"),
                     method="post", action="/login",
                 ),
                 cls="card",
@@ -629,7 +652,7 @@ def change_password_form(sess, error: str = ""):
                 Form(
                     Input(type="password", name="new", placeholder="new password", autofocus=True),
                     Input(type="password", name="confirm", placeholder="confirm new password"),
-                    Button("Save password"),
+                    action_button("Save password", busy="Saving…"),
                     method="post", action="/change-password",
                 ),
                 cls="card",
@@ -1092,7 +1115,7 @@ def settings(sess, msg: str = ""):
         P("Paste this into the hugger browser extension to authorize it. "
           "Keep it secret — it grants archive access.", cls="muted"),
         Div(Span(cfg.api_token, cls="mono"), cls="card", style="background:#fffdf6"),
-        Form(Button("Rotate token", cls="danger"),
+        Form(action_button("Rotate token", cls="danger", busy="Rotating…"),
              method="post", action="/settings/rotate-token"),
         cls="card",
     )
@@ -1107,10 +1130,10 @@ def settings(sess, msg: str = ""):
         P("Needed to download gated or private models. ", Span(src_label, cls="muted")),
         Form(
             Input(type="password", name="token", placeholder="hf_… (leave blank and Clear to remove)"),
-            Button("Save token"),
+            action_button("Save token", busy="Saving…"),
             method="post", action="/settings/hf-token",
         ),
-        (Form(Button("Clear token", cls="danger"), method="post", action="/settings/hf-token/clear")
+        (Form(action_button("Clear token", cls="danger", busy="Clearing…"), method="post", action="/settings/hf-token/clear")
          if src == "ui" else ""),
         cls="card",
     )
@@ -1119,7 +1142,7 @@ def settings(sess, msg: str = ""):
         Form(
             Input(type="password", name="current", placeholder="current password"),
             Input(type="password", name="new", placeholder="new password"),
-            Button("Update password"),
+            action_button("Update password", busy="Updating…"),
             method="post", action="/settings/password",
         ),
         cls="card",
