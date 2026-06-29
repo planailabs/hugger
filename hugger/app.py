@@ -91,6 +91,11 @@ def _modal_close_oob():
     return Div(id="modal", hx_swap_oob="true")
 
 
+def _modal_oob(*content):
+    """Out-of-band re-render of #modal (e.g. to keep a picker open with an error)."""
+    return Div(*content, id="modal", hx_swap_oob="true")
+
+
 def file_list(files: list[dict], *, action: str, submit_buttons: list, hidden: dict | None = None,
               preselect=None, statuses: dict | None = None, removable_repo: str | None = None):
     """Reusable file picker: checkbox + path + size, optional status + per-file
@@ -258,14 +263,17 @@ app, rt = fast_app(
     middleware=_middleware(),
     pico=False,
     hdrs=(THEME,),
+    # On graceful shutdown, mark in-flight jobs queued (not failed) so they resume.
+    on_shutdown=[jobs.manager.shutdown],
 )
 
 
 # --- shared fragments ----------------------------------------------------
 
-def search_results(models: list[dict]):
+def search_results(models: list[dict], query: str = ""):
+    """Search results rendered as a modal; each row opens the file picker modal."""
     if not models:
-        return Div(P("No results.", cls="muted"), id="search-results")
+        return modal(f"Search · {query}".rstrip(" ·"), P("No results.", cls="muted"))
     rows = []
     for m in models:
         rows.append(
@@ -285,9 +293,9 @@ def search_results(models: list[dict]):
                 ),
             )
         )
-    return Div(
-        Table(Thead(Tr(Th("Model"), Th("Downloads"), Th("Likes"), Th())), Tbody(*rows)),
-        id="search-results",
+    return modal(
+        f"Search · {query}".rstrip(" ·"),
+        Div(Table(Thead(Tr(Th("Model"), Th("Downloads"), Th("Likes"), Th())), Tbody(*rows)), cls="filelist"),
     )
 
 
@@ -461,6 +469,7 @@ def page(*content, sess=None):
             Nav(
                 A("Home", href="/"),
                 A("Archives", href="/archives"),
+                A("Jobs", href="/jobs"),
                 A("Stores", href="/stores"),
                 A("Settings", href="/settings"),
                 A("Logout", href="/logout"),
@@ -503,10 +512,9 @@ def index(sess):
         H2("Find a model"),
         Form(
             Input(type="text", name="q", placeholder="e.g. llama, bert, whisper…"),
-            action_button("Search"),
-            hx_post="/ui/search", hx_target="#search-results", hx_swap="outerHTML",
+            action_button("Search", busy="Searching…"),
+            hx_post="/ui/search", hx_include="#target-store", hx_target="#modal", hx_swap="innerHTML",
         ),
-        Div(id="search-results"),
         cls="card",
     )
     manual = Form(
@@ -631,15 +639,12 @@ def _guard_csrf(req, sess, csrf):
 @rt("/ui/search", methods=["POST"])
 def ui_search(req, sess, q: str = "", csrf: str = ""):
     if not _guard_csrf(req, sess, csrf):
-        return Div(P("Session expired, reload the page.", cls="err"), id="search-results")
-    return search_results(search_models(q))
+        return modal("Search", P("Session expired, reload the page.", cls="err"))
+    return search_results(search_models(q), query=q)
 
 
-@rt("/ui/files", methods=["GET"])
-def ui_files(req, sess, repo_id: str = "", store_id: str = ""):
-    repo_id = repo_id.strip()
-    if not repo_id:
-        return Div(id="modal")
+def _archive_modal(repo_id: str, store_id: str, notice: str | None = None):
+    """The Archive file-picker modal (shows total size + an optional error)."""
     try:
         info = hub.repo_files(repo_id)
     except Exception as e:
@@ -651,15 +656,26 @@ def ui_files(req, sess, repo_id: str = "", store_id: str = ""):
             f["path"]: ("downloaded" if metadata.file_downloaded(rec["path"], f["path"], f["size"]) else "missing")
             for f in info["files"]
         }
+    total = sum(f["size"] for f in info["files"])
+    head = [P(notice, cls="err")] if notice else []
+    head.append(P(f"Total {human_size(total)} · {len(info['files'])} files", cls="muted"))
     form = file_list(
         info["files"], action="/ui/archive",
-        hidden={"repo_id": repo_id, "store_id": store_id}, statuses=statuses,
+        hidden={"repo_id": repo_id, "store_id": store_id or ""}, statuses=statuses,
         submit_buttons=[
             action_button("⤓ Download all", name="mode", value="all"),
             action_button("⤓ Download selected", name="mode", value="selected", cls="ghost"),
         ],
     )
-    return modal(f"Archive {repo_id}", form)
+    return modal(f"Archive {repo_id}", *head, form)
+
+
+@rt("/ui/files", methods=["GET"])
+def ui_files(req, sess, repo_id: str = "", store_id: str = ""):
+    repo_id = repo_id.strip()
+    if not repo_id:
+        return Div(id="modal")
+    return _archive_modal(repo_id, store_id)
 
 
 @rt("/ui/archive", methods=["POST"])
@@ -674,9 +690,10 @@ async def ui_archive(req, sess):
         try:
             jobs.manager.start_download(repo_id, store_id=store_id, selected=selected)
         except (jobs.InsufficientSpace, jobs.Busy) as e:
-            return jobs_fragment(notice=f"⚠️ {e}")
+            # Keep the picker open and show the error there, not in the jobs card.
+            return jobs_fragment(), _modal_oob(_archive_modal(repo_id, store_id, notice=f"⚠️ {e}"))
         except Exception as e:
-            return jobs_fragment(notice=f"⚠️ {type(e).__name__}: {e}")
+            return jobs_fragment(), _modal_oob(_archive_modal(repo_id, store_id, notice=f"⚠️ {type(e).__name__}: {e}"))
     return jobs_fragment(), _modal_close_oob()
 
 
@@ -804,8 +821,7 @@ async def ui_file_remove(req, sess):
     return manage_list_fragment(repo_id)
 
 
-@rt("/ui/update/{repo_id:path}", methods=["GET"])
-def ui_update(req, sess, repo_id: str):
+def _update_modal(repo_id: str, notice: str | None = None):
     try:
         v = jobs.manager.verify(repo_id)
     except KeyError:
@@ -821,8 +837,14 @@ def ui_update(req, sess, repo_id: str):
         v["files"], action=f"/ui/update/{repo_id}", hidden={"repo_id": repo_id},
         statuses=statuses, preselect=changed, submit_buttons=buttons,
     )
-    return modal(f"Update {repo_id}",
-                 P(f"{len(changed)} file(s) changed or missing.", cls="muted"), form)
+    head = [P(notice, cls="err")] if notice else []
+    head.append(P(f"{len(changed)} file(s) changed or missing.", cls="muted"))
+    return modal(f"Update {repo_id}", *head, form)
+
+
+@rt("/ui/update/{repo_id:path}", methods=["GET"])
+def ui_update(req, sess, repo_id: str):
+    return _update_modal(repo_id)
 
 
 @rt("/ui/update/{repo_id:path}", methods=["POST"])
@@ -836,13 +858,74 @@ async def ui_update_apply(req, sess):
             try:
                 jobs.manager.start_download(repo_id, rec["revision"], store_id=rec["store_id"], selected=selected)
             except (jobs.InsufficientSpace, jobs.Busy) as e:
-                return jobs_fragment(notice=f"⚠️ {e}")
+                return jobs_fragment(), _modal_oob(_update_modal(repo_id, notice=f"⚠️ {e}"))
     return jobs_fragment(), _modal_close_oob()
 
 
 @rt("/ui/jobs", methods=["GET"])
 def ui_jobs():
     return jobs_fragment()
+
+
+def job_history_fragment():
+    names = {s["id"]: s["name"] for s in store.list_stores()}
+    rows = []
+    for j in store.recent_jobs():
+        badge = Span(j["status"], cls="badge update" if j["status"] == "error" else "badge current")
+        detail = j["error"] or ""
+        retry = (action_button("Retry", busy="Restarting…", cls="ghost",
+                               hx_post=f"/ui/jobs/{j['id']}/retry", hx_target="#jobhistory", hx_swap="outerHTML")
+                 if j["status"] == "error" else "")
+        rows.append(Tr(
+            Td("⇄ move" if j["type"] == "move" else "⤓ download", cls="muted"),
+            Td(j["repo_id"], cls="mono"),
+            Td(names.get(j["store_id"]) or "—", cls="muted"),
+            Td(badge),
+            Td(detail[:90], cls="err" if detail else "muted"),
+            Td((j["updated_at"] or "")[:19].replace("T", " "), cls="muted mono"),
+            Td(retry),
+        ))
+    body = (Table(Thead(Tr(Th("Type"), Th("Model"), Th("Store"), Th("Status"),
+                           Th("Detail"), Th("Updated (UTC)"), Th(""))), Tbody(*rows))
+            if rows else P("No jobs yet.", cls="muted"))
+    header = Div(
+        H2("Job history"),
+        action_button("Clear finished", busy="Clearing…", cls="ghost",
+                      hx_post="/ui/jobs/clear", hx_target="#jobhistory", hx_swap="outerHTML"),
+        cls="row",
+    )
+    return Div(header, body,
+               P("Finished jobs (done/error) are kept for 30 days, then pruned on "
+                 "startup — or clear them now. Queued/running/paused jobs are kept "
+                 "and resume after a restart.", cls="muted"),
+               id="jobhistory")
+
+
+@rt("/jobs")
+def jobs_history_page(sess):
+    return page(
+        Div(H2("Live jobs"), jobs_fragment(), cls="card"),
+        Div(job_history_fragment(), cls="card"),
+        sess=sess,
+    )
+
+
+@rt("/ui/jobs/clear", methods=["POST"])
+def ui_jobs_clear(req, sess, csrf: str = ""):
+    if _guard_csrf(req, sess, csrf):
+        store.delete_finished_jobs()
+        jobs.manager.clear_finished()
+    return job_history_fragment()
+
+
+@rt("/ui/jobs/{job_id}/retry", methods=["POST"])
+def ui_job_retry(req, sess, job_id: str, csrf: str = ""):
+    if _guard_csrf(req, sess, csrf):
+        try:
+            jobs.manager.retry(job_id)
+        except (jobs.InsufficientSpace, jobs.Busy):
+            pass
+    return job_history_fragment()
 
 
 @rt("/ui/archives", methods=["GET"])
@@ -1198,6 +1281,7 @@ def api_archive_delete(req):
 def main() -> None:
     store.run_migrations()
     store.ensure_default_store(str(ARCHIVE_DIR))  # default store lives in ~/.hugger
+    store.prune_jobs()  # drop finished jobs older than the retention window
     _bootstrap_password()
     jobs.manager.resume_pending()  # re-launch downloads/moves interrupted by a restart
     import uvicorn

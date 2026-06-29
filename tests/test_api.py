@@ -138,6 +138,40 @@ def test_stores_page_renders():
     assert "Data stores" in cli.get("/stores").text
 
 
+def test_archive_space_error_shows_in_modal():
+    cli = _setup_client()
+    _login(cli)
+    of = hub.repo_files
+    hub.repo_files = lambda r, rev="main": {"sha": "s", "files": [{"path": "a", "size": 1}]}
+    appmod.hub.repo_files = hub.repo_files
+    orig = jobs.manager.start_download
+
+    def boom(*a, **k):
+        raise jobs.InsufficientSpace("need 805 GB but only 86 GB free")
+
+    jobs.manager.start_download = boom
+    try:
+        r = cli.post("/ui/archive", data={"repo_id": "org/x", "mode": "all"},
+                     headers={"X-CSRF-Token": _csrf(cli)}).text
+        assert "hx-swap-oob" in r and "need 805 GB" in r and "modal-overlay" in r
+    finally:
+        jobs.manager.start_download = orig
+        hub.repo_files = of
+        appmod.hub.repo_files = of
+
+
+def test_search_returns_modal():
+    cli = _setup_client()
+    _login(cli)
+    of = appmod.search_models
+    appmod.search_models = lambda q, limit=25: [{"id": "o/m", "downloads": 1, "likes": 0, "last_modified": ""}]
+    try:
+        r = cli.post("/ui/search", data={"q": "x"}, headers={"X-CSRF-Token": _csrf(cli)}).text
+        assert "modal-overlay" in r and "o/m" in r and "Archive" in r
+    finally:
+        appmod.search_models = of
+
+
 def test_ui_move_starts_job():
     cli = _setup_client()
     _login(cli)

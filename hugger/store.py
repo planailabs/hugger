@@ -282,3 +282,28 @@ def list_jobs(statuses: list[str]) -> list[dict]:
             f"SELECT * FROM jobs WHERE status IN ({placeholders}) ORDER BY created_at", statuses
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def recent_jobs(limit: int = 200) -> list[dict]:
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            "SELECT * FROM jobs ORDER BY updated_at DESC, created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def prune_jobs(max_age_days: int = 30) -> int:
+    """Delete finished (done/error) jobs older than max_age_days. Returns count."""
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
+    with closing(_connect()) as conn, conn:
+        cur = conn.execute(
+            "DELETE FROM jobs WHERE status IN ('done','error') AND updated_at < ?", (cutoff,)
+        )
+        return cur.rowcount
+
+
+def delete_finished_jobs() -> int:
+    with closing(_connect()) as conn, conn:
+        cur = conn.execute("DELETE FROM jobs WHERE status IN ('done','error')")
+        return cur.rowcount

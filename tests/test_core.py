@@ -222,6 +222,49 @@ def test_read_progress_from_file():
     assert metadata.read_progress(d, meta) == 1000
 
 
+def test_job_history_and_clear():
+    store.save_job({"id": "h1", "repo_id": "o/m", "status": "done"})
+    store.save_job({"id": "h2", "repo_id": "o/m", "status": "error", "error": "boom"})
+    ids = [j["id"] for j in store.recent_jobs()]
+    assert "h1" in ids and "h2" in ids
+    assert store.prune_jobs(30) == 0  # both are recent
+    store.delete_finished_jobs()
+    assert "h1" not in [j["id"] for j in store.recent_jobs()]
+
+
+def test_shutdown_marks_running_queued():
+    a = store.get_default_store()["id"]
+    jobs.manager._jobs["sd1"] = jobs.Job(id="sd1", repo_id="o/m", type="download", status="running", store_id=a)
+    try:
+        jobs.manager.shutdown()
+        assert jobs.manager.get("sd1").status == "queued"
+        row = next(r for r in store.recent_jobs() if r["id"] == "sd1")
+        assert row["status"] == "queued"
+    finally:
+        jobs.manager._shutting_down = False
+        jobs.manager._jobs.pop("sd1", None)
+
+
+def test_retry_error_job():
+    a = store.get_default_store()["id"]
+    repo = "org/retry"
+    mdir = jobs.store_repo_path(store.get_store(a)["path"], repo)
+    metadata.write(mdir, metadata.build(repo, "main", "s", [{"path": "a", "size": 1}], ["a"]))
+    store.upsert_archive(repo, "main", "s", str(mdir), 0, a)
+    store.save_job({"id": "e1", "repo_id": repo, "revision": "main", "type": "download",
+                    "status": "error", "store_id": a})
+    started = {}
+    osd = jobs.manager.start_download
+    jobs.manager.start_download = lambda r, rev="main", store_id=None, selected=None: (
+        started.update(repo=r, store=store_id, sel=selected) or jobs.Job(id="new", repo_id=r))
+    try:
+        jobs.manager.retry("e1")  # row only in the DB
+        assert started == {"repo": repo, "store": a, "sel": ["a"]}
+    finally:
+        jobs.manager.start_download = osd
+        store.delete_archive_and_hashes(repo)
+
+
 def test_util_writable_and_free():
     d = Path(_TMP) / "wtest"
     util.check_writable(d)  # creates + verifies, no raise

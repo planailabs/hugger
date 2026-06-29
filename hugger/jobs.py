@@ -84,6 +84,25 @@ class JobManager:
     def __init__(self) -> None:
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
+        self._shutting_down = False
+
+    def shutdown(self) -> None:
+        """On server shutdown, terminate in-flight transfers and persist them as
+        queued (not error) so they auto-resume on the next start."""
+        self._shutting_down = True
+        for j in list(self._jobs.values()):
+            if j.status in ("queued", "running"):
+                p = j._proc
+                if p and p.poll() is None:
+                    try:
+                        p.terminate()
+                    except Exception:
+                        pass
+                j.status = "queued"
+                try:
+                    j.persist()
+                except Exception:
+                    pass
 
     # --- space accounting -------------------------------------------------
     def pending_bytes(self, store_id: str, exclude: str | None = None) -> int:
@@ -182,6 +201,35 @@ class JobManager:
             job.persist()
             self._spawn(job)
 
+    def retry(self, job_id: str) -> Job | None:
+        """Restart a failed job (it may only exist in the DB after a restart).
+        Starts a fresh job with the same repo/store/files; the old error row
+        stays in history."""
+        job = self._jobs.get(job_id)
+        if job is not None:
+            if job.status != "error":
+                return None
+            repo, store_id, typ, revision = job.repo_id, job.store_id, job.type, job.revision
+        else:
+            row = next((r for r in store.recent_jobs() if r["id"] == job_id), None)
+            if not row or row["status"] != "error":
+                return None
+            repo, store_id, typ, revision = row["repo_id"], row["store_id"], row["type"], row["revision"] or "main"
+        if typ == "move":
+            return self.start_move(repo, store_id)
+        selected = None  # re-pick the originally selected files if metadata survives
+        st = store.get_store(store_id)
+        if st:
+            meta = metadata.read(store_repo_path(st["path"], repo))
+            if meta:
+                selected = meta.get("selected")
+        return self.start_download(repo, revision, store_id=store_id, selected=selected)
+
+    def clear_finished(self) -> None:
+        with self._lock:
+            self._jobs = {k: v for k, v in self._jobs.items()
+                          if v.status in ("queued", "running", "paused")}
+
     # --- queries ----------------------------------------------------------
     def get(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)
@@ -247,6 +295,8 @@ class JobManager:
             )
             job._proc = proc
             while proc.poll() is None:
+                if self._shutting_down:
+                    return  # shutdown() persisted us as queued; resume on restart
                 if job._stop.is_set():
                     proc.terminate()
                     try:
@@ -255,6 +305,8 @@ class JobManager:
                         proc.kill()
                     job.status = "paused"; job.persist(); return
                 job._stop.wait(0.5)
+            if self._shutting_down:
+                return
 
             rc = proc.returncode
             poll_stop.set()
@@ -274,6 +326,10 @@ class JobManager:
                 job.status = "done"; job.persist()
             elif job._stop.is_set():
                 job.status = "paused"; job.persist()
+            elif rc is not None and rc < 0:
+                # Killed by a signal (server shutdown / kill / OOM), not a real
+                # download failure. Leave it queued so it auto-resumes on restart.
+                job.status = "queued"; job.persist()
             else:
                 job.status = "error"; job.error = f"download exited with code {rc}"; job.persist()
         except Exception as e:
