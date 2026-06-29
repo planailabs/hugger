@@ -83,9 +83,9 @@ def ds_button(label: str, action: str, *, indicator: str, busy: str | None = Non
     busy = busy or (label.rstrip(".… ") + "…")
     return Button(
         Span(label, cls="idle"), Span(busy, cls="busy"), cls=cls,
-        **{"data-on-click": action,
+        **{"data-on:click": action,
            "data-indicator": indicator,
-           "data-attr-disabled": f"${indicator}",
+           "data-attr:disabled": f"${indicator}",
            "data-class": '{"is-busy": $%s}' % indicator},
         **kw,
     )
@@ -100,10 +100,11 @@ def _sig(prefix: str, key: str) -> str:
 # --- reusable Datastar components ----------------------------------------
 
 def live_panel(body, *, wrapper_id: str, stream_url: str):
-    """A panel kept live by a Datastar SSE stream. The wrapper opens the stream
-    on load (fires once and is never patched); the stream morphs `body`, which
-    must carry its own id."""
-    return Div(body, id=wrapper_id, **{"data-on-load": f"@get('{stream_url}')"})
+    """A panel kept live by a Datastar SSE stream. data-init opens the stream once
+    when the wrapper is initialized (the wrapper itself is never patched); the
+    stream morphs `body`, which must carry its own id. (`data-on:load` won't work —
+    the `load` DOM event never fires on a div.)"""
+    return Div(body, id=wrapper_id, **{"data-init": f"@get('{stream_url}')"})
 
 
 def sse_stream(render, *, interval: float = 1.0):
@@ -148,7 +149,7 @@ def modal(title: str, *content):
     return Div(
         Div(
             Div(H3(title),
-                Button("✕", cls="modal-close", **{"data-on-click": "@get('/ui/close')"}),
+                Button("✕", cls="modal-close", **{"data-on:click": "@get('/ui/close')"}),
                 cls="modal-head"),
             *content,
             cls="modal-card",

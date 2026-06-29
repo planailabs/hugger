@@ -405,7 +405,7 @@ def test_datastar_runtime_self_hosted():
 def test_jobs_panel_is_datastar_stream():
     from fasthtml.common import to_xml
     panel = to_xml(appmod.jobs_panel())
-    assert 'data-on-load="@get(' in panel  # opens the SSE stream on load
+    assert 'data-init="@get(' in panel  # opens the SSE stream on load
     assert 'id="jobs-body"' in panel        # inner target the stream morphs
 
 
@@ -422,7 +422,7 @@ def test_jobs_pause_button_is_datastar():
         body = to_xml(appmod.jobs_body())
     finally:
         jobs.manager.active = orig
-    assert "data-on-click=\"@post('/ui/jobs/abc-123/pause')\"" in body
+    assert "data-on:click=\"@post('/ui/jobs/abc-123/pause')\"" in body
     assert "hx-post" not in body  # Pause/Resume no longer htmx
 
 
@@ -451,7 +451,7 @@ def test_jobs_sse_stream_emits_patch():
 def test_archives_panel_is_datastar_stream():
     from fasthtml.common import to_xml
     panel = to_xml(appmod.archives_panel())
-    assert 'data-on-load="@get(' in panel
+    assert 'data-init="@get(' in panel
     assert 'id="archives-body"' in panel
     # Check-all is a Datastar action
     assert "@post('/ui/check-all')" in panel
@@ -469,7 +469,7 @@ def test_summary_sse_stream():
     """The dashboard summary is a Datastar SSE stream patching #summary-body."""
     import asyncio
     from fasthtml.common import to_xml
-    assert 'data-on-load="@get(' in to_xml(appmod.summary_panel())
+    assert 'data-init="@get(' in to_xml(appmod.summary_panel())
 
     async def first_frame():
         resp = await appmod.ui_summary()
