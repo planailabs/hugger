@@ -74,15 +74,28 @@ async def _ds_csrf_ok(req, sess) -> bool:
     return auth.csrf_ok(sess, signals.get("csrf"))
 
 
+# Download icon: an arrow-down inside a circle (inline SVG, inherits text colour).
+def dl_icon(size: int = 16):
+    return NotStr(
+        f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" '
+        'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" '
+        'aria-hidden="true" style="flex:none"><circle cx="12" cy="12" r="10"></circle>'
+        '<path d="M12 8v8"></path><path d="m8 12 4 4 4-4"></path></svg>'
+    )
+
+
 def ds_button(label: str, action: str, *, indicator: str, busy: str | None = None,
-              cls: str = "", **kw):
+              cls: str = "", icon=None, **kw):
     """Button that fires a Datastar action (e.g. "@post('/x')") with built-in busy
     feedback: a local indicator signal (underscore-prefixed → not sent to the
     backend) disables the button and toggles the busy styling/label while the
-    request is in flight. No per-button JS, no request-class wiring."""
+    request is in flight. `icon` (FT/SVG) is shown before the label. No per-button
+    JS, no request-class wiring."""
     busy = busy or (label.rstrip(".… ") + "…")
+    idle = (icon, label) if icon is not None else (label,)
+    busyc = (icon, busy) if icon is not None else (busy,)
     return Button(
-        Span(label, cls="idle"), Span(busy, cls="busy"), cls=cls,
+        Span(*idle, cls="idle"), Span(*busyc, cls="busy"), cls=cls,
         **{"data-on:click": action,
            "data-indicator": indicator,
            "data-attr:disabled": f"${indicator}",
@@ -109,6 +122,13 @@ _PILL = {
 def status_pill(label: str):
     """A coloured status pill (with a dot) for a job/file status string."""
     return Span(label, cls=f"badge {_PILL.get(label.lower(), '')}".rstrip())
+
+
+def job_kind(job_type: str):
+    """Inline job-kind indicator: download icon + label, or move."""
+    if job_type == "move":
+        return Span("⇄ move", cls="muted kind")
+    return Span(dl_icon(14), "download", cls="muted kind")
 
 
 # --- reusable Datastar components ----------------------------------------
@@ -201,19 +221,23 @@ def file_list(files: list[dict], *, submit_buttons: list, signals: dict | None =
     disabled = disabled or set()
     selected = [f["path"] for f in files if f["path"] in preselect and f["path"] not in disabled]
     seed = {"files": selected, "mode": "all", **(signals or {})}
-    head = [Th(""), Th("File"), Th("Size")]
+    head = [Th("File"), Th("Size", cls="r")]
     if statuses is not None:
         head.append(Th("Status"))
     if removable_repo:
-        head.append(Th(""))
+        head.append(Th("", cls="r"))
     rows = []
     for f in files:
         is_disabled = f["path"] in disabled
         cells = [
-            Td(Input(type="checkbox", value=f["path"], disabled=is_disabled,
-                     **{"data-bind": "files"})),
-            Td(f["path"], cls="mono wrap"),
-            Td(human_size(f["size"]), cls="muted"),
+            # checkbox + filename together in the File cell (label), per the design
+            Td(Label(
+                Input(type="checkbox", value=f["path"], disabled=is_disabled,
+                      **{"data-bind": "files"}),
+                Span(f["path"], cls="mono wrap"),
+                cls="fcheck",
+            )),
+            Td(human_size(f["size"]), cls="muted r"),
         ]
         status = statuses.get(f["path"]) if statuses is not None else None
         if statuses is not None:
@@ -384,6 +408,10 @@ THEME = Style(
     .row>input.narrow{flex:0 0 auto;min-width:0;width:200px}
     /* repo ids / paths / tokens are monospace (design); search & passwords stay sans */
     input.mono{font-family:var(--mono);font-size:14px}
+    .kind{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+    /* file picker: checkbox + name in one cell; bigger orange checkboxes */
+    .fcheck{display:flex;align-items:center;gap:11px;cursor:pointer}
+    input[type=checkbox]{width:17px;height:17px;accent-color:var(--accent);cursor:pointer;flex:none}
     select{cursor:pointer;padding:0 10px}
     input::placeholder{color:#A98C68}
     /* vertical rhythm helpers */
@@ -402,10 +430,11 @@ THEME = Style(
     button.danger{background:var(--danger);border-color:var(--danger)}
     button.danger:hover{background:#B91C1C;border-color:#B91C1C}
     a.btn{text-decoration:none}
+    button .idle{display:inline-flex;align-items:center;gap:7px}
     button .busy{display:none}
     button.is-busy{cursor:progress;opacity:.92}
     button.is-busy .idle{display:none}
-    button.is-busy .busy{display:inline}
+    button.is-busy .busy{display:inline-flex;align-items:center;gap:7px}
 
     table{width:100%;border-collapse:collapse}
     th{text-align:left;padding:12px 14px;font-size:12px;font-weight:800;letter-spacing:.07em;
@@ -515,8 +544,8 @@ def search_results(models: list[dict], query: str = ""):
                 Td(f"{m['downloads']:,}", cls="muted"),
                 Td(f"♥ {m['likes']}", cls="muted"),
                 Td(
-                    ds_button("⤓ Archive…", f"$repo = '{m['id']}'; @get('/ui/files')",
-                              indicator=_sig("a", m["id"]), busy="Opening…"),
+                    ds_button("Archive…", f"$repo = '{m['id']}'; @get('/ui/files')",
+                              indicator=_sig("a", m["id"]), busy="Opening…", icon=dl_icon()),
                 ),
             )
         )
@@ -538,7 +567,6 @@ def jobs_body(notice: str | None = None):
     finished = [j for j in jobs.manager.recent() if j.status in ("done", "error")]
     items = []
     for j in active:
-        kind = "⇄ move" if j.type == "move" else "⤓ download"
         ind = _sig("b", j.id)
         controls = []
         if j.status == "paused":
@@ -554,7 +582,7 @@ def jobs_body(notice: str | None = None):
             state = status_pill(j.status)
         items.append(
             Div(
-                Div(Span(f"{kind} ", cls="muted"), Span(j.repo_id, cls="mono"), state, cls="row"),
+                Div(job_kind(j.type), Span(j.repo_id, cls="mono"), state, cls="row"),
                 Progress(value=str(j.done_bytes), max=str(max(j.total_bytes, 1))),
                 Div(
                     Span(f"{human_size(j.done_bytes)} / {human_size(j.total_bytes)}", cls="muted"),
@@ -760,7 +788,7 @@ def index(sess):
     )
     manual = Div(
         Input(type="text", placeholder="org/model — archive by id", cls="mono", **{"data-bind": "repo"}),
-        ds_button("⤓ Archive…", "@get('/ui/files')", indicator="_arch", busy="Opening…"),
+        ds_button("Archive…", "@get('/ui/files')", indicator="_arch", busy="Opening…", icon=dl_icon()),
         cls="row mb",
     )
     downloads = Div(
@@ -896,9 +924,9 @@ def _archive_modal(repo_id: str, store_id: str, notice: str | None = None):
         info["files"], statuses=statuses, disabled=locked,
         signals={"repo": repo_id, "store": store_id or ""},
         submit_buttons=[
-            ds_button("⤓ Download all", "$mode='all'; @post('/ui/archive')", indicator="_dlall"),
-            ds_button("⤓ Download selected", "$mode='selected'; @post('/ui/archive')",
-                      indicator="_dlsel", cls="ghost"),
+            ds_button("Download all", "$mode='all'; @post('/ui/archive')", indicator="_dlall", icon=dl_icon()),
+            ds_button("Download selected", "$mode='selected'; @post('/ui/archive')",
+                      indicator="_dlsel", cls="ghost", icon=dl_icon()),
         ],
     )
     return modal(f"Archive {repo_id}", *head, form)
@@ -1002,8 +1030,8 @@ def manage_list_fragment(repo_id: str):
     form = file_list(
         info["files"], statuses=statuses,
         preselect=preselect, removable_repo=repo_id, disabled=locked,
-        submit_buttons=[ds_button("⤓ Download selected", f"@post('/ui/manage/{repo_id}')",
-                                  indicator="_mgdl")],
+        submit_buttons=[ds_button("Download selected", f"@post('/ui/manage/{repo_id}')",
+                                  indicator="_mgdl", icon=dl_icon())],
     )
     return Div(form, id="managelist")
 
@@ -1114,7 +1142,7 @@ def job_history_fragment():
                            indicator=_sig("rt", j["id"]), busy="Restarting…", cls="ghost")
                  if j["status"] == "error" else "")
         rows.append(Tr(
-            Td("⇄ move" if j["type"] == "move" else "⤓ download", cls="muted"),
+            Td(job_kind(j["type"])),
             Td(j["repo_id"], cls="mono wrap"),
             Td(names.get(j["store_id"]) or "—", cls="muted"),
             Td(badge),
