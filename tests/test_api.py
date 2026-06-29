@@ -372,6 +372,52 @@ def test_datastar_runtime_self_hosted():
     assert "Datastar" in r.text
 
 
+def test_jobs_panel_is_datastar_stream():
+    from fasthtml.common import to_xml
+    panel = to_xml(appmod.jobs_panel())
+    assert 'data-on-load="@get(' in panel  # opens the SSE stream on load
+    assert 'id="jobs-body"' in panel        # inner target the stream morphs
+
+
+def test_jobs_pause_button_is_datastar():
+    """A running job renders a Datastar Pause action (not htmx)."""
+    from fasthtml.common import to_xml
+
+    class _J:
+        id = "abc-123"; type = "download"; status = "running"; repo_id = "o/m"
+        percent = 10; done_bytes = 1; total_bytes = 10
+    orig = jobs.manager.active
+    jobs.manager.active = lambda: [_J()]
+    try:
+        body = to_xml(appmod.jobs_body())
+    finally:
+        jobs.manager.active = orig
+    assert "data-on-click=\"@post('/ui/jobs/abc-123/pause')\"" in body
+    assert "hx-post" not in body  # Pause/Resume no longer htmx
+
+
+def test_jobs_pause_returns_patch():
+    cli = _setup_client()
+    _login(cli)
+    # Datastar @post carries csrf as a signal (JSON body); route returns a patch.
+    r = cli.post("/ui/jobs/none/pause", json={"csrf": _csrf(cli)})
+    assert r.status_code == 200
+    assert "datastar-patch-elements" in r.text
+    assert "jobs-body" in r.text
+
+
+def test_jobs_sse_stream_emits_patch():
+    import asyncio
+
+    async def first_frame():
+        resp = await appmod.ui_jobs()
+        chunk = await resp.body_iterator.__anext__()
+        return chunk if isinstance(chunk, str) else chunk.decode()
+    ev = asyncio.run(first_frame())
+    assert "datastar-patch-elements" in ev
+    assert "jobs-body" in ev
+
+
 def test_summary_sse_stream():
     """The dashboard summary is a Datastar SSE stream patching #summary-body."""
     import asyncio

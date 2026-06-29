@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import secrets
 from pathlib import Path
 
@@ -67,6 +68,34 @@ def human_size(n: int) -> str:
 
 def _csrf_value(req, form_val: str | None) -> str | None:
     return req.headers.get("x-csrf-token") or form_val
+
+
+async def _ds_csrf_ok(req, sess) -> bool:
+    """CSRF check for Datastar actions: the token rides as the `csrf` signal
+    (sent in the JSON body for POST, the `datastar` query for GET)."""
+    signals = await read_signals(req) or {}
+    return auth.csrf_ok(sess, signals.get("csrf"))
+
+
+def ds_button(label: str, action: str, *, indicator: str, busy: str | None = None,
+              cls: str = "", **kw):
+    """Button that fires a Datastar action (e.g. "@post('/x')") with built-in busy
+    feedback: a local indicator signal (underscore-prefixed → not sent to the
+    backend) disables the button and toggles the busy styling/label while the
+    request is in flight. No per-button JS, no request-class wiring."""
+    busy = busy or (label.rstrip(".… ") + "…")
+    return Button(
+        Span(label, cls="idle"), Span(busy, cls="busy"), cls=cls,
+        **{"data-on-click": action,
+           "data-indicator": indicator,
+           "data-attr-disabled": f"${indicator}",
+           "data-class": '{"htmx-request": $%s}' % indicator},
+        **kw,
+    )
+
+
+def _job_indicator(job_id: str) -> str:
+    return "_b" + re.sub(r"[^0-9a-zA-Z]", "", job_id)
 
 
 # --- interactive UI helpers ----------------------------------------------
@@ -140,7 +169,7 @@ def file_list(files: list[dict], *, action: str, submit_buttons: list, hidden: d
         *[Input(type="hidden", name=k, value=v) for k, v in (hidden or {}).items()],
         Div(Table(Thead(Tr(*head)), Tbody(*rows)), cls="filelist"),
         Div(*submit_buttons, cls="row"),
-        hx_post=action, hx_target="#jobs", hx_swap="outerHTML",
+        hx_post=action, hx_target="#jobs-body", hx_swap="outerHTML",
     )
 
 
@@ -365,24 +394,28 @@ def _job_verb(j) -> str:
     return "move" if j.type == "move" else "download"
 
 
-def jobs_fragment(notice: str | None = None):
+def jobs_body(notice: str | None = None):
+    """Inner content of the jobs panel (id #jobs-body). The Datastar stream morphs
+    this in place every second; one-shot htmx actions retarget it too. Pause/Resume
+    are Datastar actions — morph never destroys them, so they can't be clobbered."""
     active = jobs.manager.active()
     finished = [j for j in jobs.manager.recent() if j.status in ("done", "error")]
     items = []
     for j in active:
         kind = "⇄ move" if j.type == "move" else "⤓ download"
+        ind = _job_indicator(j.id)
         controls = []
         if j.status == "paused":
-            controls.append(action_button("Resume", cls="ghost", hx_post=f"/ui/jobs/{j.id}/resume",
-                                          hx_target="#jobs", hx_swap="outerHTML"))
+            controls.append(ds_button("Resume", f"@post('/ui/jobs/{j.id}/resume')",
+                                       indicator=ind, cls="ghost"))
             if j.type == "download":  # only paused downloads can re-pick files
                 controls.append(action_button("Edit files", busy="Opening…",
                                               hx_get=f"/ui/jobs/{j.id}/files",
                                               hx_target="#modal", hx_swap="innerHTML"))
             state = Span(" paused", cls="muted")
         else:
-            controls.append(action_button("Pause", cls="ghost", hx_post=f"/ui/jobs/{j.id}/pause",
-                                          hx_target="#jobs", hx_swap="outerHTML"))
+            controls.append(ds_button("Pause", f"@post('/ui/jobs/{j.id}/pause')",
+                                       indicator=ind, cls="ghost"))
             state = Span(f" {j.percent}%", cls="muted")
         items.append(
             Div(
@@ -392,7 +425,7 @@ def jobs_fragment(notice: str | None = None):
                     Span(f"{human_size(j.done_bytes)} / {human_size(j.total_bytes)}", cls="muted"),
                     *controls, cls="row",
                 ),
-                cls="job",
+                cls="job", id=f"job-{ind}",
             )
         )
     for j in finished:
@@ -400,11 +433,6 @@ def jobs_fragment(notice: str | None = None):
             items.append(Div(Span(j.repo_id, cls="mono"), Span(f" {_job_verb(j)} failed: ", cls="err"), Span(j.error or "", cls="err"), cls="job"))
         else:
             items.append(Div(Span("✓ ", cls=""), Span(j.repo_id, cls="mono"), Span(f" {_job_verb(j)}d", cls="muted"), cls="job"))
-    # Poll while anything is running; paused jobs don't need polling. NB: no
-    # `load` here — #jobs swaps itself via outerHTML, and a `load` trigger would
-    # re-fire on every swap (a hot reload loop that clobbers the buttons mid-click,
-    # making Pause feel dead). `every 1s` alone is enough.
-    poll = "every 1s" if any(j.status in ("queued", "running") for j in active) else "none"
     inner = items or [P("No active jobs.", cls="muted")]
     if any(j.type == "download" and j.status in ("queued", "running") for j in active):
         inner.append(P("ℹ︎ Download progress is reported by huggingface_hub: "
@@ -413,16 +441,14 @@ def jobs_fragment(notice: str | None = None):
                        "for finer steps.)", cls="muted"))
     if notice:
         inner = [P(notice, cls="err"), *inner]
-    return Div(
-        *inner,
-        id="jobs",
-        hx_get="/ui/jobs",
-        hx_trigger=poll,
-        hx_swap="outerHTML",
-        # Coalesce overlapping polls and let a user action (Pause/Resume) abort an
-        # in-flight poll so it isn't clobbered mid-request.
-        hx_sync="this:replace",
-    )
+    return Div(*inner, id="jobs-body")
+
+
+def jobs_panel(notice: str | None = None):
+    """Jobs panel wrapper: opens a Datastar SSE stream on load that keeps
+    #jobs-body live (no polling). The wrapper itself is never patched, so the
+    trigger fires exactly once."""
+    return Div(jobs_body(notice), id="jobs", **{"data-on-load": "@get('/ui/jobs')"})
 
 
 def _short(sha: str | None) -> str:
@@ -437,7 +463,7 @@ def _move_control(repo_id: str, current_store_id: str | None, stores: list[dict]
     return Form(
         Select(*[Option(s["name"], value=s["id"]) for s in others], name="store_id"),
         action_button("Move", cls="ghost"),
-        hx_post=f"/ui/move/{repo_id}", hx_target="#jobs", hx_swap="outerHTML",
+        hx_post=f"/ui/move/{repo_id}", hx_target="#jobs-body", hx_swap="outerHTML",
         cls="row",
     )
 
@@ -555,6 +581,9 @@ def page(*content, sess=None):
         Div(id="modal"),  # action modals (file lists) render here
         id="app",
         hx_headers=json.dumps({"X-CSRF-Token": csrf}),
+        # CSRF for Datastar actions: rides as the `csrf` signal (body for POST,
+        # query for GET). htmx requests keep using the header above.
+        **{"data-signals": json.dumps({"csrf": csrf})},
     )
 
 
@@ -600,7 +629,7 @@ def index(sess):
         cls="row",
     )
     downloads = Div(
-        H2("Downloads"), store_selector(), manual, jobs_fragment(), cls="card",
+        H2("Downloads"), store_selector(), manual, jobs_panel(), cls="card",
     )
     blocks = []
     if hub.hf_token_source() == "none":
@@ -620,7 +649,7 @@ def archives_page(sess):
     # their progress is visible right here.
     return page(
         Div(archives_fragment(), cls="card"),
-        Div(H2("Jobs"), jobs_fragment(), cls="card"),
+        Div(H2("Jobs"), jobs_panel(), cls="card"),
         sess=sess,
     )
 
@@ -761,10 +790,10 @@ async def ui_archive(req, sess):
             jobs.manager.start_download(repo_id, store_id=store_id, selected=selected)
         except (jobs.InsufficientSpace, jobs.Busy) as e:
             # Keep the picker open and show the error there, not in the jobs card.
-            return jobs_fragment(), _modal_oob(_archive_modal(repo_id, store_id, notice=f"⚠️ {e}"))
+            return jobs_body(), _modal_oob(_archive_modal(repo_id, store_id, notice=f"⚠️ {e}"))
         except Exception as e:
-            return jobs_fragment(), _modal_oob(_archive_modal(repo_id, store_id, notice=f"⚠️ {type(e).__name__}: {e}"))
-    return jobs_fragment(), _modal_close_oob()
+            return jobs_body(), _modal_oob(_archive_modal(repo_id, store_id, notice=f"⚠️ {type(e).__name__}: {e}"))
+    return jobs_body(), _modal_close_oob()
 
 
 @rt("/ui/move/{repo_id:path}", methods=["POST"])
@@ -773,24 +802,24 @@ def ui_move(req, sess, repo_id: str, store_id: str = "", csrf: str = ""):
         try:
             jobs.manager.start_move(repo_id, store_id)
         except (jobs.InsufficientSpace, jobs.Busy) as e:
-            return jobs_fragment(notice=f"⚠️ {e}")
+            return jobs_body(notice=f"⚠️ {e}")
         except KeyError:
             pass
-    return jobs_fragment()
+    return jobs_body()
 
 
 @rt("/ui/jobs/{job_id}/pause", methods=["POST"])
-def ui_job_pause(req, sess, job_id: str, csrf: str = ""):
-    if _guard_csrf(req, sess, csrf):
+async def ui_job_pause(req, sess, job_id: str):
+    if await _ds_csrf_ok(req, sess):
         jobs.manager.pause(job_id)
-    return jobs_fragment()
+    return DatastarResponse(SSE.patch_elements(to_xml(jobs_body())))
 
 
 @rt("/ui/jobs/{job_id}/resume", methods=["POST"])
-def ui_job_resume(req, sess, job_id: str, csrf: str = ""):
-    if _guard_csrf(req, sess, csrf):
+async def ui_job_resume(req, sess, job_id: str):
+    if await _ds_csrf_ok(req, sess):
         jobs.manager.resume(job_id)
-    return jobs_fragment()
+    return DatastarResponse(SSE.patch_elements(to_xml(jobs_body())))
 
 
 @rt("/ui/jobs/{job_id}/files", methods=["GET"])
@@ -817,7 +846,7 @@ async def ui_job_files_save(req, sess):
     form = await req.form()
     if auth.csrf_ok(sess, _csrf_value(req, form.get("csrf"))):
         jobs.manager.update_selected(req.path_params["job_id"], form.getlist("files"))
-    return jobs_fragment(), _modal_close_oob()
+    return jobs_body(), _modal_close_oob()
 
 
 def manage_list_fragment(repo_id: str):
@@ -857,7 +886,7 @@ def manage_page(req, sess, repo_id: str):
     return page(
         info,
         Div(manage_list_fragment(repo_id), cls="card"),
-        Div(H2("Jobs"), jobs_fragment(), cls="card"),
+        Div(H2("Jobs"), jobs_panel(), cls="card"),
         sess=sess,
     )
 
@@ -873,8 +902,8 @@ async def ui_manage_download(req, sess):
             try:
                 jobs.manager.start_download(repo_id, rec["revision"], store_id=rec["store_id"], selected=files)
             except (jobs.InsufficientSpace, jobs.Busy) as e:
-                return jobs_fragment(notice=f"⚠️ {e}")
-    return jobs_fragment()
+                return jobs_body(notice=f"⚠️ {e}")
+    return jobs_body()
 
 
 @rt("/ui/file-remove/{repo_id:path}", methods=["POST"])
@@ -925,13 +954,23 @@ async def ui_update_apply(req, sess):
             try:
                 jobs.manager.start_download(repo_id, rec["revision"], store_id=rec["store_id"], selected=selected)
             except (jobs.InsufficientSpace, jobs.Busy) as e:
-                return jobs_fragment(), _modal_oob(_update_modal(repo_id, notice=f"⚠️ {e}"))
-    return jobs_fragment(), _modal_close_oob()
+                return jobs_body(), _modal_oob(_update_modal(repo_id, notice=f"⚠️ {e}"))
+    return jobs_body(), _modal_close_oob()
 
 
 @rt("/ui/jobs", methods=["GET"])
-def ui_jobs():
-    return jobs_fragment()
+async def ui_jobs():
+    """Long-lived SSE stream keeping #jobs-body live; emits a patch only when the
+    rendered body changes, so idle pages send nothing (no polling)."""
+    async def gen():
+        last = None
+        while True:
+            html = to_xml(jobs_body())
+            if html != last:
+                yield SSE.patch_elements(html)
+                last = html
+            await asyncio.sleep(1)
+    return DatastarResponse(gen())
 
 
 def job_history_fragment():
@@ -973,7 +1012,7 @@ def job_history_fragment():
 @rt("/jobs")
 def jobs_history_page(sess):
     return page(
-        Div(H2("Live jobs"), jobs_fragment(), cls="card"),
+        Div(H2("Live jobs"), jobs_panel(), cls="card"),
         Div(job_history_fragment(), cls="card"),
         sess=sess,
     )
