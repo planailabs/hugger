@@ -3,8 +3,11 @@
     python -m tests.test_core      (or)     python tests/test_core.py
 """
 import os
+import sys
 import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # Point hugger at a throwaway home BEFORE importing it.
 _TMP = tempfile.mkdtemp(prefix="hugger-test-")

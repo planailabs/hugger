@@ -8,8 +8,11 @@ instead — this file is the only thing that touches the real Hub.
 """
 import os
 import socket
+import sys
 import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 _TMP = tempfile.mkdtemp(prefix="hugger-live-")
 os.environ["HUGGER_HOME"] = _TMP

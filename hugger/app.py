@@ -135,6 +135,10 @@ def file_list(files: list[dict], *, action: str, submit_buttons: list, hidden: d
 
 class SecurityHeaders(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
+        if request.method in ("GET", "HEAD"):
+            request.scope["headers"] = [
+                h for h in request.scope["headers"] if h[0] != b"content-type"
+            ]
         resp = await call_next(request)
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["X-Frame-Options"] = "DENY"
@@ -1256,8 +1260,7 @@ def api_archives():
 @rt("/api/archive/{repo_id:path}", methods=["GET"])
 def api_archive_status(req):
     """Whether a specific repo is archived — used by the extension to decide
-    between offering Archive vs Remove/Update. Takes `req` (not a body-sourced
-    param) so a stray Content-Type header can't trigger body parsing."""
+    between offering Archive vs Remove/Update."""
     repo_id = req.path_params["repo_id"]
     rec = store.get_archive(repo_id)
     if not rec:
