@@ -271,12 +271,14 @@ class JobManager:
                 info = hub.repo_files(job.repo_id, job.revision)
                 meta = metadata.build(job.repo_id, job.revision, info["sha"], info["files"], None)
                 metadata.write(dest, meta)
-            job.total_bytes = meta["total_size"]; job.sha = meta["sha"]; job.persist()
+            job.total_bytes = meta["total_size"]; job.sha = meta["sha"]
+            # Seed from what's already on disk so a resumed job shows its real
+            # progress immediately instead of flashing 0%.
+            job.done_bytes = metadata.read_progress(dest, meta)
+            job.persist()
 
             def poll():
                 while not poll_stop.is_set():
-                    # transfer-accurate progress from the worker's tqdm file
-                    # (falls back to scanning the filesystem)
                     job.done_bytes = metadata.read_progress(dest, meta)
                     poll_stop.wait(1.0)
 
@@ -284,11 +286,12 @@ class JobManager:
 
             env = dict(os.environ)
             env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
-            # Progress is synced from the hf library's own progress emitter (its
-            # tqdm bytes bar -> .hugger.progress), which works for both transfers:
-            # per-chunk on the classic LFS path, per-xorb-group on Xet. Xet stays
-            # enabled (faster); export HF_HUB_DISABLE_XET=1 to force the classic
-            # path for finer-grained progress on small files.
+            # Default to the classic LFS transfer: it streams each file to a
+            # resumable `.incomplete` on disk, so pausing/restarting continues from
+            # where it stopped and the progress bar reflects bytes-on-disk. Xet is
+            # faster but reconstructs at the end (no partial on disk, no partial
+            # resume) — opt in with HF_HUB_DISABLE_XET=0 if you don't need resume.
+            env.setdefault("HF_HUB_DISABLE_XET", "1")
             proc = subprocess.Popen(
                 [sys.executable, "-m", "hugger._dlworker", job.repo_id, job.revision, str(dest)],
                 env=env,

@@ -51,6 +51,7 @@
         checks = nixpkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           vm = import ./nixos/test.nix { inherit pkgs self; };
           browser = import ./nixos/browser_test.nix { inherit pkgs self; };
+          docker = import ./nixos/docker_test.nix { inherit pkgs self; };
         };
 
         # `nix develop` — Python deps are managed by uv against this pinned

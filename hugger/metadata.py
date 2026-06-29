@@ -24,14 +24,18 @@ def progress_file(model_dir: Path | str) -> Path:
 
 
 def read_progress(model_dir: Path | str, meta: dict) -> int:
-    """Live downloaded bytes from the subprocess's tqdm progress file (works for
-    both classic and Xet transfers); falls back to scanning the filesystem."""
+    """Live downloaded bytes for the progress bar. Uses the larger of the hf
+    progress file (the library's reported bytes) and the actual on-disk size
+    (completed files + in-flight `.incomplete` staging), so it always reflects
+    unfinished files and never regresses on resume. Capped at total_size."""
+    fs = progress_bytes(model_dir, meta)
     try:
         n = int(progress_file(model_dir).read_text().split()[0])
     except (OSError, ValueError, IndexError):
-        return progress_bytes(model_dir, meta)
-    total = meta.get("total_size", 0) or n
-    return max(0, min(total, n))
+        n = 0
+    best = max(n, fs)
+    total = meta.get("total_size", 0) or best
+    return max(0, min(total, best))
 
 
 def build(repo_id: str, revision: str, sha: str, files: list[dict],

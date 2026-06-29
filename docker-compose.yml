@@ -1,0 +1,30 @@
+# Example deployment of the hugger server.
+#
+#   docker compose up -d
+#   docker compose logs hugger | grep PASSWORD   # initial password (first run)
+#   open http://localhost:7860
+#
+# On first run hugger generates a password (printed to the logs) and forces a
+# change on login — or set HUGGER_PASSWORD below to choose your own.
+services:
+  hugger:
+    image: git.plan.ai:5050/plan-ai/hugger/hugger:latest
+    restart: unless-stopped
+    ports:
+      - "7860:7860"
+    volumes:
+      - hugger-data:/data            # DB, config, and archived models live here
+    environment:
+      # --- optional ---
+      # Pick the login password instead of using the generated one:
+      # HUGGER_PASSWORD: "change-me"
+      # HuggingFace token for gated/private models (or set it in Settings):
+      # HF_TOKEN: "hf_xxx"
+      # Re-enable the Xet transfer (faster, but no partial-resume / on-disk progress):
+      # HF_HUB_DISABLE_XET: "0"
+      # When served behind an HTTPS reverse proxy, lock down host + send HSTS:
+      # HUGGER_HTTPS_ONLY: "true"
+      # HUGGER_ALLOWED_HOSTS: "hugger.example.com"
+
+volumes:
+  hugger-data:
