@@ -15,6 +15,11 @@ dependencies = [
 [project.scripts]
 hugger = "hugger.app:main"
 
+# Test-only deps (PEP 735). selenium drives the browser E2E tests; the browsers
+# and their drivers come from nixpkgs, not here. Built into the uv2nix test env.
+[dependency-groups]
+test = ["selenium>=4"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

@@ -29,11 +29,6 @@
         lib = nixpkgs.lib;
         pkgs = nixpkgs.legacyPackages.${system};
         python = pkgs.python313;
-        # Python with hugger's runtime deps + selenium, for running the test suite
-        # directly (no uv/venv needed).
-        testPython = pkgs.python3.withPackages (ps: with ps; [
-          fasthtml huggingface-hub yoyo-migrations argon2-cffi uvicorn selenium
-        ]);
       in
       let
         # uv2nix: load uv.lock, prefer prebuilt wheels (so hf-xet's manylinux
@@ -63,6 +58,9 @@
             description = "A HuggingFace model archiver (web UI + browser extension)";
           };
         });
+        # Same uv2nix env plus the `test` group (selenium) — for running the test
+        # suite directly. Browsers/drivers come from nixpkgs alongside it.
+        testEnv = pythonSet.mkVirtualEnv "hugger-test-env" workspace.deps.all;
       in
       {
         packages = {
@@ -159,7 +157,7 @@
         # and both browsers + their drivers. `test-all` runs the whole suite.
         devShells.test = pkgs.mkShell {
           packages = [
-            testPython
+            testEnv
             pkgs.git
             pkgs.jq
             pkgs.curl
@@ -194,7 +192,7 @@
         apps.test = {
           type = "app";
           program = toString (pkgs.writeShellScript "hugger-test-all" ''
-            export PATH="${testPython}/bin:${pkgs.jq}/bin:${pkgs.curl}/bin:${pkgs.zip}/bin:$PATH"
+            export PATH="${testEnv}/bin:${pkgs.jq}/bin:${pkgs.curl}/bin:${pkgs.zip}/bin:$PATH"
             cd "''${HUGGER_SRC:-.}"
             exec ${pkgs.bash}/bin/bash ./scripts/test-all.sh
           '');
