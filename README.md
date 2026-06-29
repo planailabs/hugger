@@ -46,8 +46,8 @@ It runs the server on `0.0.0.0:7860`, stores everything under the `/data` volume
 (`HUGGER_HOME=/data`), and bundles a CA bundle for HuggingFace TLS. CI builds and
 pushes it to the registry via `docker-push.sh` (see `.gitlab-ci.yml`).
 
-There's also a NixOS-in-Incus CI-runner image (`nix build .#image`, mirrors
-plan-ai/memvault) for self-hosted GitLab runners.
+There's also a NixOS-in-Incus CI-runner image (`nix build .#image`) for
+self-hosted GitLab runners.
 
 ### NixOS module
 

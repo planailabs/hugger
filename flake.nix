@@ -5,7 +5,6 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     gitlab-incus-image.url = "git+https://git.mkg20001.io/mkg20001/gitlab-incus-image.git";
-    gitlab-incus-image.inputs.nixpkgs.follows = "nixpkgs";
     xzar.url = "github:mkg20001/xzar";
     xzar.inputs.nixpkgs.follows = "nixpkgs";
   };
@@ -50,7 +49,7 @@
             };
           };
 
-          # NixOS-in-Incus image for gitlab CI runners (mirrors plan-ai/memvault).
+          # NixOS-in-Incus image for gitlab CI runners.
           image = (nixpkgs.lib.nixosSystem {
             system = "x86_64-linux";
             modules = [
