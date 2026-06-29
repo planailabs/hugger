@@ -286,12 +286,9 @@ class JobManager:
 
             env = dict(os.environ)
             env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
-            # Default to the classic LFS transfer: it streams each file to a
-            # resumable `.incomplete` on disk, so pausing/restarting continues from
-            # where it stopped and the progress bar reflects bytes-on-disk. Xet is
-            # faster but reconstructs at the end (no partial on disk, no partial
-            # resume) — opt in with HF_HUB_DISABLE_XET=0 if you don't need resume.
-            env.setdefault("HF_HUB_DISABLE_XET", "1")
+            # NOTE: do NOT disable Xet here (see AGENTS.md). Xet is the fast default
+            # transfer. Progress is synced from hf's tqdm bytes bar; on the classic
+            # path .incomplete files also let read_progress reflect bytes-on-disk.
             proc = subprocess.Popen(
                 [sys.executable, "-m", "hugger._dlworker", job.repo_id, job.revision, str(dest)],
                 env=env,

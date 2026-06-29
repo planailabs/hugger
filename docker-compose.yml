@@ -20,8 +20,9 @@ services:
       # HUGGER_PASSWORD: "change-me"
       # HuggingFace token for gated/private models (or set it in Settings):
       # HF_TOKEN: "hf_xxx"
-      # Re-enable the Xet transfer (faster, but no partial-resume / on-disk progress):
-      # HF_HUB_DISABLE_XET: "0"
+      # Xet is the default fast transfer. Force the classic LFS path instead
+      # (resumable .incomplete on disk, but slower) with:
+      # HF_HUB_DISABLE_XET: "1"
       # When served behind an HTTPS reverse proxy, lock down host + send HSTS:
       # HUGGER_HTTPS_ONLY: "true"
       # HUGGER_ALLOWED_HOSTS: "hugger.example.com"
