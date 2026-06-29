@@ -1007,8 +1007,8 @@ def job_history_fragment():
         detail = j["error"] or ""
         if j["status"] == "retried" and j.get("retried_by"):
             detail = f"→ retried as {j['retried_by']}"
-        retry = (action_button("Retry", busy="Restarting…", cls="ghost",
-                               hx_post=f"/ui/jobs/{j['id']}/retry", hx_target="#jobhistory", hx_swap="outerHTML")
+        retry = (ds_button("Retry", f"@post('/ui/jobs/{j['id']}/retry')",
+                           indicator=_sig("rt", j["id"]), busy="Restarting…", cls="ghost")
                  if j["status"] == "error" else "")
         rows.append(Tr(
             Td("⇄ move" if j["type"] == "move" else "⤓ download", cls="muted"),
@@ -1024,8 +1024,8 @@ def job_history_fragment():
             if rows else P("No jobs yet.", cls="muted"))
     header = Div(
         H2("Job history"),
-        action_button("Clear finished", busy="Clearing…", cls="ghost",
-                      hx_post="/ui/jobs/clear", hx_target="#jobhistory", hx_swap="outerHTML"),
+        ds_button("Clear finished", "@post('/ui/jobs/clear')",
+                  indicator="_clearfin", busy="Clearing…", cls="ghost"),
         cls="row",
     )
     return Div(header, body,
@@ -1045,21 +1045,21 @@ def jobs_history_page(sess):
 
 
 @rt("/ui/jobs/clear", methods=["POST"])
-def ui_jobs_clear(req, sess, csrf: str = ""):
-    if _guard_csrf(req, sess, csrf):
+async def ui_jobs_clear(req, sess):
+    if await _ds_csrf_ok(req, sess):
         store.delete_finished_jobs()
         jobs.manager.clear_finished()
-    return job_history_fragment()
+    return patch(job_history_fragment())
 
 
 @rt("/ui/jobs/{job_id}/retry", methods=["POST"])
-def ui_job_retry(req, sess, job_id: str, csrf: str = ""):
-    if _guard_csrf(req, sess, csrf):
+async def ui_job_retry(req, sess, job_id: str):
+    if await _ds_csrf_ok(req, sess):
         try:
             jobs.manager.retry(job_id)
         except (jobs.InsufficientSpace, jobs.Busy):
             pass
-    return job_history_fragment()
+    return patch(job_history_fragment())
 
 
 @rt("/ui/archives", methods=["GET"])
@@ -1102,27 +1102,30 @@ async def ui_delete(req, sess, repo_id: str):
 
 # --- data stores ---------------------------------------------------------
 
-def stores_fragment(notice: str | None = None):
+def stores_body(notice: str | None = None):
     rows = []
     for s in store.list_stores():
+        sid = s["id"]
         default_cell = (
             Span("default", cls="badge current") if s["is_default"]
-            else action_button("Make default", cls="ghost",
-                               hx_post=f"/ui/stores/{s['id']}/default", hx_target="#stores", hx_swap="outerHTML")
+            else ds_button("Make default", f"@post('/ui/stores/{sid}/default')",
+                           indicator=_sig("sd", sid), cls="ghost")
         )
         try:
             free = util.human_size(util.free_space(s["path"]))
         except Exception:
             free = "—"
         actions = [
-            action_button("Import", busy="Importing…", cls="ghost",
-                          hx_post=f"/ui/stores/{s['id']}/import", hx_target="#stores", hx_swap="outerHTML"),
+            ds_button("Import", f"@post('/ui/stores/{sid}/import')",
+                      indicator=_sig("si", sid), busy="Importing…", cls="ghost"),
         ]
         # A store can be deleted only when it's non-default and empty.
         if not s["is_default"] and not s["n_models"]:
-            actions.append(action_button("Delete", cls="danger",
-                                         hx_post=f"/ui/stores/{s['id']}/delete", hx_target="#stores", hx_swap="outerHTML",
-                                         hx_confirm=f"Remove store '{s['name']}'? (files on disk are left untouched)"))
+            actions.append(ds_button(
+                "Delete",
+                f"confirm(\"Remove store '{s['name']}'? (files on disk are left untouched)\") "
+                f"&& @post('/ui/stores/{sid}/delete')",
+                indicator=_sig("sx", sid), cls="danger"))
         rows.append(Tr(
             Td(s["name"]),
             Td(s["path"], cls="mono muted"),
@@ -1135,12 +1138,11 @@ def stores_fragment(notice: str | None = None):
         Thead(Tr(Th("Name"), Th("Path"), Th("Models"), Th("Free"), Th("Default"), Th(""))),
         Tbody(*rows),
     )
-    add = Form(
-        Input(type="text", name="name", placeholder="name"),
-        Input(type="text", name="path", placeholder="/absolute/path"),
-        action_button("Add store", busy="Adding…"),
-        hx_post="/ui/stores/add", hx_target="#stores", hx_swap="outerHTML",
-        cls="row",
+    add = Div(
+        Input(type="text", placeholder="name", **{"data-bind": "sname"}),
+        Input(type="text", placeholder="/absolute/path", **{"data-bind": "spath"}),
+        ds_button("Add store", "@post('/ui/stores/add')", indicator="_addstore", busy="Adding…"),
+        cls="row", **{"data-signals": json.dumps({"sname": "", "spath": ""})},
     )
     head = [H2("Data stores")]
     if notice:
@@ -1148,53 +1150,55 @@ def stores_fragment(notice: str | None = None):
     return Div(*head, table, add,
                P("Import scans a store's folder and rebuilds the catalog from each "
                  "model's .hugger.json.", cls="muted"),
-               id="stores")
+               id="stores-body")
 
 
 @rt("/stores")
 def stores_page(sess):
-    return page(Div(stores_fragment(), cls="card"), sess=sess)
+    return page(Div(stores_body(), cls="card"), sess=sess)
 
 
 @rt("/ui/stores/add", methods=["POST"])
-def ui_store_add(req, sess, name: str = "", path: str = "", csrf: str = ""):
-    if _guard_csrf(req, sess, csrf) and name.strip() and path.strip():
+async def ui_store_add(req, sess):
+    s = await _ds(req)
+    name, path = (s.get("sname") or "").strip(), (s.get("spath") or "").strip()
+    if auth.csrf_ok(sess, s.get("csrf")) and name and path:
         from pathlib import Path as _P
         p = str(_P(path).expanduser())
         try:
             util.check_writable(p)  # creates the dir and verifies it's writable
         except OSError as e:
-            return stores_fragment(notice=f"⚠️ {path} is not writable: {e}")
+            return patch(stores_body(notice=f"⚠️ {path} is not writable: {e}"))
         try:
-            store.add_store(name.strip(), p)  # rejects paths overlapping another store
+            store.add_store(name, p)  # rejects paths overlapping another store
         except ValueError as e:
-            return stores_fragment(notice=f"⚠️ {e}")
-    return stores_fragment()
+            return patch(stores_body(notice=f"⚠️ {e}"))
+    return patch(stores_body())
 
 
 @rt("/ui/stores/{store_id}/import", methods=["POST"])
-def ui_store_import(req, sess, store_id: str, csrf: str = ""):
-    if _guard_csrf(req, sess, csrf):
+async def ui_store_import(req, sess, store_id: str):
+    if await _ds_csrf_ok(req, sess):
         try:
             n = jobs.import_store(store_id)
-            return stores_fragment(notice=f"Imported {n} model(s).")
+            return patch(stores_body(notice=f"Imported {n} model(s)."))
         except KeyError:
             pass
-    return stores_fragment()
+    return patch(stores_body())
 
 
 @rt("/ui/stores/{store_id}/default", methods=["POST"])
-def ui_store_default(req, sess, store_id: str, csrf: str = ""):
-    if _guard_csrf(req, sess, csrf):
+async def ui_store_default(req, sess, store_id: str):
+    if await _ds_csrf_ok(req, sess):
         store.set_default_store(store_id)
-    return stores_fragment()
+    return patch(stores_body())
 
 
 @rt("/ui/stores/{store_id}/delete", methods=["POST"])
-def ui_store_delete(req, sess, store_id: str, csrf: str = ""):
-    if _guard_csrf(req, sess, csrf) and store.store_model_count(store_id) == 0:
+async def ui_store_delete(req, sess, store_id: str):
+    if await _ds_csrf_ok(req, sess) and store.store_model_count(store_id) == 0:
         store.delete_store(store_id)
-    return stores_fragment()
+    return patch(stores_body())
 
 
 # --- settings ------------------------------------------------------------
