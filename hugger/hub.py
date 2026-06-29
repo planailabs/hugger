@@ -102,3 +102,12 @@ def download(repo_id: str, revision: str, dest: Path,
         allow_patterns=allow_patterns,
         **kw,
     )
+
+
+def download_one(repo_id: str, revision: str, dest: Path, rel: str) -> str:
+    """Download a single file into `dest` via the classic path (resumable LFS)."""
+    from huggingface_hub import hf_hub_download
+    return hf_hub_download(
+        repo_id=repo_id, filename=rel, revision=revision,
+        local_dir=str(dest), token=current_hf_token(),
+    )

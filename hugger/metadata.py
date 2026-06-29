@@ -109,6 +109,11 @@ def progress_bytes(model_dir: Path | str, meta: dict) -> int:
                 partial += p.stat().st_size
             except OSError:
                 pass
+    for p in Path(model_dir).rglob("*.xetpart"):  # in-flight resumable Xet files
+        try:
+            partial += p.stat().st_size
+        except OSError:
+            pass
     return min(meta.get("total_size", 0) or (done + partial), done + partial)
 
 

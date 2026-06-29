@@ -14,7 +14,7 @@ from pathlib import Path
 
 from tqdm.auto import tqdm as base_tqdm
 
-from . import hub, metadata
+from . import _xet_download, hub, metadata
 
 
 class _ProgressTqdm(base_tqdm):
@@ -56,6 +56,15 @@ def main() -> int:
     except OSError:
         pass
     _ProgressTqdm.path = str(pf)
+    if _xet_download.enabled():
+        # Per-file loop so each Xet file resumes from its `.xetpart` on disk.
+        # Progress is tracked by the parent from the filesystem (completed files
+        # + `*.xetpart`/`*.incomplete`), so no tqdm hook is needed here.
+        token = hub.current_hf_token()
+        for rel in (allow or [f["path"] for f in (meta.get("files") or [])]):
+            if not _xet_download.download_file(repo_id, revision, rel, dest, token):
+                hub.download_one(repo_id, revision, Path(dest), rel)  # not Xet -> classic
+        return 0
     hub.download(repo_id, revision, Path(dest), allow_patterns=allow, tqdm_class=_ProgressTqdm)
     return 0
 
