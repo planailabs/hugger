@@ -94,8 +94,10 @@ def ds_button(label: str, action: str, *, indicator: str, busy: str | None = Non
     )
 
 
-def _job_indicator(job_id: str) -> str:
-    return "_b" + re.sub(r"[^0-9a-zA-Z]", "", job_id)
+def _sig(prefix: str, key: str) -> str:
+    """A DOM-safe, per-element local indicator signal name. Underscore-prefixed so
+    Datastar treats it as local (never sent to the backend)."""
+    return "_" + prefix + re.sub(r"[^0-9a-zA-Z]", "", key)
 
 
 # --- reusable Datastar components ----------------------------------------
@@ -432,7 +434,7 @@ def jobs_body(notice: str | None = None):
     items = []
     for j in active:
         kind = "⇄ move" if j.type == "move" else "⤓ download"
-        ind = _job_indicator(j.id)
+        ind = _sig("b", j.id)
         controls = []
         if j.status == "paused":
             controls.append(ds_button("Resume", f"@post('/ui/jobs/{j.id}/resume')",
@@ -495,9 +497,10 @@ def _move_control(repo_id: str, current_store_id: str | None, stores: list[dict]
     )
 
 
-def archives_fragment():
+def archives_body():
     rows = []
     for a in store.list_archives():
+        rid = a["repo_id"]
         badge = (
             Span("update available", cls="badge update")
             if a["update_available"]
@@ -505,22 +508,21 @@ def archives_fragment():
         )
         rows.append(
             Tr(
-                Td(A(a["repo_id"], href=f"https://huggingface.co/{a['repo_id']}", target="_blank", cls="link mono")),
+                Td(A(rid, href=f"https://huggingface.co/{rid}", target="_blank", cls="link mono")),
                 Td(a.get("store_name") or "—", cls="muted"),
                 Td(human_size(a["size_bytes"]), cls="muted"),
                 Td(_short(a["sha"]), cls="mono muted"),
                 Td(badge),
                 Td(
                     Div(
-                        A("Manage", href=f"/manage/{a['repo_id']}", cls="btn ghost"),
-                        (action_button("Update…", busy="Checking…", hx_get=f"/ui/update/{a['repo_id']}",
+                        A("Manage", href=f"/manage/{rid}", cls="btn ghost"),
+                        (action_button("Update…", busy="Checking…", hx_get=f"/ui/update/{rid}",
                                        hx_target="#modal", hx_swap="innerHTML")
                          if a["update_available"] else
-                         action_button("Check", hx_post=f"/ui/check/{a['repo_id']}",
-                                       hx_target="#archives", hx_swap="outerHTML", cls="ghost")),
-                        action_button("Delete", cls="danger",
-                                      hx_post=f"/ui/delete/{a['repo_id']}", hx_target="#archives", hx_swap="outerHTML",
-                                      hx_confirm=f"Delete archive {a['repo_id']} from disk?"),
+                         ds_button("Check", f"@post('/ui/check/{rid}')",
+                                   indicator=_sig("c", rid), cls="ghost")),
+                        ds_button("Delete", f"confirm('Delete archive {rid} from disk?') && @post('/ui/delete/{rid}')",
+                                  indicator=_sig("d", rid), cls="danger"),
                         cls="row",
                     )
                 ),
@@ -536,12 +538,16 @@ def archives_fragment():
     )
     header = Div(
         H2("Archived models"),
-        action_button("Check all for updates", busy="Checking…", cls="ghost",
-               hx_post="/ui/check-all", hx_target="#archives", hx_swap="outerHTML"),
+        ds_button("Check all for updates", "@post('/ui/check-all')",
+                  indicator="_checkall", busy="Checking…", cls="ghost"),
         cls="row",
     )
-    return Div(header, body, id="archives", hx_get="/ui/archives",
-               hx_trigger="every 5s", hx_swap="outerHTML")
+    return Div(header, body, id="archives-body")
+
+
+def archives_panel():
+    """Archives list, kept live by an SSE stream (morphs #archives-body)."""
+    return live_panel(archives_body(), wrapper_id="archives", stream_url="/ui/archives")
 
 
 def summary_fragment():
@@ -672,7 +678,7 @@ def archives_page(sess):
     # Include the jobs panel so Move actions (which swap #jobs) have a target and
     # their progress is visible right here.
     return page(
-        Div(archives_fragment(), cls="card"),
+        Div(archives_panel(), cls="card"),
         Div(H2("Jobs"), jobs_panel(), cls="card"),
         sess=sess,
     )
@@ -1051,8 +1057,8 @@ def ui_job_retry(req, sess, job_id: str, csrf: str = ""):
 
 
 @rt("/ui/archives", methods=["GET"])
-def ui_archives():
-    return archives_fragment()
+async def ui_archives():
+    return sse_stream(archives_body, interval=5)
 
 
 @rt("/ui/summary", methods=["GET"])
@@ -1061,31 +1067,31 @@ async def ui_summary():
 
 
 @rt("/ui/check/{repo_id:path}", methods=["POST"])
-def ui_check(req, sess, repo_id: str, csrf: str = ""):
-    if _guard_csrf(req, sess, csrf):
+async def ui_check(req, sess, repo_id: str):
+    if await _ds_csrf_ok(req, sess):
         try:
             jobs.check_update(repo_id)
         except KeyError:
             pass
-    return archives_fragment()
+    return patch(archives_body())
 
 
 @rt("/ui/check-all", methods=["POST"])
-def ui_check_all(req, sess, csrf: str = ""):
-    if _guard_csrf(req, sess, csrf):
+async def ui_check_all(req, sess):
+    if await _ds_csrf_ok(req, sess):
         for a in store.list_archives():
             try:
                 jobs.check_update(a["repo_id"])
             except Exception:
                 pass
-    return archives_fragment()
+    return patch(archives_body())
 
 
 @rt("/ui/delete/{repo_id:path}", methods=["POST"])
-def ui_delete(req, sess, repo_id: str, csrf: str = ""):
-    if _guard_csrf(req, sess, csrf):
+async def ui_delete(req, sess, repo_id: str):
+    if await _ds_csrf_ok(req, sess):
         jobs.delete_archive(repo_id)
-    return archives_fragment()
+    return patch(archives_body())
 
 
 # --- data stores ---------------------------------------------------------

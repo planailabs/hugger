@@ -44,6 +44,14 @@ def _login(cli):
     assert r.headers["location"] == "/"
 
 
+def _ds_post(cli, url, csrf=None):
+    """Simulate a Datastar @post: the runtime sends a Datastar-Request header and
+    the signals as a JSON body."""
+    headers = {"Datastar-Request": "true"}
+    body = {"csrf": csrf} if csrf is not None else {}
+    return cli.post(url, json=body, headers=headers)
+
+
 def _csrf(cli):
     """Pull the per-session CSRF token out of the rendered dashboard."""
     html = cli.get("/").text
@@ -268,11 +276,11 @@ def test_delete_requires_csrf():
     cli = _setup_client()
     _login(cli)
     store.upsert_archive("org/csrf", "main", "sha123", os.path.join(_TMP, "fake-archive"), 10, STORE)
-    # Without CSRF header -> no deletion.
+    # Datastar action: CSRF rides as the `csrf` signal (JSON body). None -> no-op.
     cli.post("/ui/delete/org/csrf")
     assert store.get_archive("org/csrf") is not None
-    # With valid CSRF -> deleted.
-    cli.post("/ui/delete/org/csrf", headers={"X-CSRF-Token": _csrf(cli)})
+    # With the valid CSRF signal -> deleted.
+    _ds_post(cli, "/ui/delete/org/csrf", csrf=_csrf(cli))
     assert store.get_archive("org/csrf") is None
 
 
@@ -400,7 +408,7 @@ def test_jobs_pause_returns_patch():
     cli = _setup_client()
     _login(cli)
     # Datastar @post carries csrf as a signal (JSON body); route returns a patch.
-    r = cli.post("/ui/jobs/none/pause", json={"csrf": _csrf(cli)})
+    r = _ds_post(cli, "/ui/jobs/none/pause", csrf=_csrf(cli))
     assert r.status_code == 200
     assert "datastar-patch-elements" in r.text
     assert "jobs-body" in r.text
@@ -416,6 +424,23 @@ def test_jobs_sse_stream_emits_patch():
     ev = asyncio.run(first_frame())
     assert "datastar-patch-elements" in ev
     assert "jobs-body" in ev
+
+
+def test_archives_panel_is_datastar_stream():
+    from fasthtml.common import to_xml
+    panel = to_xml(appmod.archives_panel())
+    assert 'data-on-load="@get(' in panel
+    assert 'id="archives-body"' in panel
+    # Check-all is a Datastar action
+    assert "@post('/ui/check-all')" in panel
+
+
+def test_archives_check_all_returns_patch():
+    cli = _setup_client()
+    _login(cli)
+    r = _ds_post(cli, "/ui/check-all", csrf=_csrf(cli))
+    assert r.status_code == 200
+    assert "datastar-patch-elements" in r.text and "archives-body" in r.text
 
 
 def test_summary_sse_stream():
