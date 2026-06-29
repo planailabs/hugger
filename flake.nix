@@ -137,6 +137,7 @@
             pkgs.uv
             pkgs.git
             pkgs.skopeo  # for docker-push.sh (copy the image to the registry)
+            pkgs.tailwindcss  # scripts/build-css.sh -> hugger/static/tailwind.css
             # build inputs for any sdist-only wheels (argon2-cffi etc.)
             pkgs.gcc
             pkgs.libffi

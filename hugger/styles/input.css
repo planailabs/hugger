@@ -1,0 +1,120 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---- base ---- */
+@layer base {
+  html { scrollbar-gutter: stable; }
+  body { @apply m-0 bg-cream text-ink font-sans leading-normal;
+    -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+  :focus-visible { outline: 3px solid theme(colors.focus); outline-offset: 2px; border-radius: 6px; }
+  ::selection { background: #FFD9A8; }
+  input::placeholder { color: #A98C68; }
+}
+
+/* ---- components (the design system) ---- */
+@layer components {
+  /* header — original hugger gradient, centered bar, active-page underline */
+  header { @apply bg-hdr sticky top-0 z-40; box-shadow: 0 2px 0 rgba(120,50,0,.18); }
+  header .bar { @apply max-w-[1200px] mx-auto h-16 px-6 flex items-center justify-between gap-4; }
+  header h1 { @apply m-0 font-brand font-extrabold text-[23px] text-white; }
+  header nav { @apply flex items-center gap-0.5; }
+  header nav a { @apply relative text-white no-underline font-bold text-base rounded-lg; padding: 10px 13px 14px; }
+  header nav a:hover { background: rgba(255,255,255,.14); }
+  header nav a.active { @apply font-extrabold; }
+  header nav a.active::after { content: ""; @apply absolute left-[13px] right-[13px] bottom-1.5 h-[3px] bg-white rounded-sm; }
+
+  main { @apply max-w-[1200px] mx-auto pt-7 px-6 pb-16; }
+  .card { @apply bg-surface border-2 border-line rounded-xl py-6 px-7 mb-[22px]; }
+  h2 { @apply m-0 mb-4 font-brand font-bold text-[25px] text-accentink leading-[1.25]; }
+  h3 { @apply font-brand text-accentink; }
+
+  /* inputs */
+  input[type=text], input[type=password], input[type=search], select {
+    @apply h-11 border-2 border-inputb rounded-lg px-3.5 text-[15px] font-sans bg-white text-ink; }
+  select { @apply cursor-pointer px-2.5; }
+  .row > input[type=text], .row > input[type=password], .row > input[type=search] { @apply flex-1 basis-[220px] min-w-[200px]; }
+  .row > input.narrow { @apply flex-none min-w-0 w-[200px]; }
+  input.mono { @apply font-mono text-sm; }
+  input[type=checkbox] { @apply w-[17px] h-[17px] cursor-pointer flex-none; accent-color: theme(colors.accent); }
+  .kind { @apply inline-flex items-center gap-1.5 whitespace-nowrap; }
+  .fcheck { @apply flex items-center gap-[11px] cursor-pointer; }
+
+  /* buttons */
+  button, .btn { @apply cursor-pointer inline-flex items-center justify-center gap-[7px] h-10 px-[18px]
+    rounded-lg border-2 border-accent bg-accent text-white font-sans font-bold text-[15px] whitespace-nowrap
+    transition-colors duration-150; }
+  button:hover, .btn:hover { @apply bg-accenth border-accenth; }
+  button.ghost, .btn.ghost { @apply bg-transparent border-ghostb text-accentink2; }
+  button.ghost:hover, .btn.ghost:hover { @apply bg-ghosth; }
+  button.danger { @apply bg-danger border-danger; }
+  button.danger:hover { @apply bg-dangerh border-dangerh; }
+  a.btn { @apply no-underline; }
+  button .idle { @apply inline-flex items-center gap-[7px]; }
+  button .busy { @apply hidden; }
+  button.is-busy { @apply cursor-progress opacity-90; }
+  button.is-busy .idle { @apply hidden; }
+  button.is-busy .busy { @apply inline-flex items-center gap-[7px]; }
+
+  /* tables */
+  table { @apply w-full border-collapse; }
+  th { @apply text-left py-3 px-3.5 text-xs font-extrabold tracking-[.07em] uppercase text-th border-b border-lineth; }
+  td { @apply py-4 px-3.5 border-b border-linesoft align-middle text-[15px]; }
+  th, td { @apply whitespace-nowrap; }
+  td a.link { @apply inline-block max-w-[430px] break-all whitespace-normal align-middle; }
+  td.wrap, td .wrap { @apply whitespace-normal; overflow-wrap: anywhere; }
+  th.r, td.r { @apply text-right; }
+  .actions { @apply flex justify-end gap-2 flex-nowrap; }
+  .actions button, .actions .btn { @apply h-9 px-3.5 text-sm; }
+  .section-head { @apply flex items-center flex-wrap gap-4 pb-3.5 border-b-2 border-divider mb-4; }
+  .section-head h2 { @apply m-0; }
+
+  /* text helpers */
+  .mono { @apply font-mono text-[.9em]; }
+  .muted { @apply text-muted; }
+  .err { @apply text-errfg font-bold; }
+  a.link { @apply text-accentink2 font-bold underline underline-offset-2; }
+  a.link.muted { @apply text-muted; }
+  .stat-num { @apply font-extrabold text-accentink; }
+  .row { @apply flex gap-2.5 items-center flex-wrap; }
+  .mb { @apply mb-[18px]; }
+  .mb-sm { @apply mb-3.5; }
+  .divider-top { @apply border-t-2 border-divider pt-[18px]; }
+  .job > * + * { @apply mt-3; }
+
+  /* status pills (with a dot) */
+  .badge { @apply inline-flex items-center gap-[7px] h-[25px] px-2.5 rounded-md font-extrabold text-[12.5px] whitespace-nowrap;
+    background: theme(colors.neutralbg); color: theme(colors.neutralfg); }
+  .badge::before { content: ""; @apply w-2 h-2 rounded-full; background: currentColor; }
+  .badge.current, .badge.ok { background: theme(colors.okbg); color: theme(colors.okfg); }
+  .badge.update, .badge.warn { background: theme(colors.warnbg); color: theme(colors.warnfg); }
+  .badge.err { background: theme(colors.errbg); color: theme(colors.errfg); }
+  .badge.info { background: theme(colors.infobg); color: theme(colors.infofg); }
+
+  /* progress */
+  progress { @apply appearance-none w-full h-3 border border-lineth rounded-full overflow-hidden; background: #F3E6CC; }
+  progress::-webkit-progress-bar { background: #F3E6CC; }
+  progress::-webkit-progress-value { background: linear-gradient(90deg,#F97316,#EA580C); }
+  progress::-moz-progress-bar { background: linear-gradient(90deg,#F97316,#EA580C); }
+
+  /* recent-activity list */
+  main ul { @apply list-none pl-0 my-1; }
+  main li { @apply py-3 border-t border-linesoft; }
+
+  /* notice */
+  .notice { @apply flex gap-3 bg-warnbg border-2 rounded-xl py-3.5 px-[18px] mb-[22px] text-[15.5px] leading-[1.55];
+    border-color: #E9B949; color: #7A4E0A; }
+  .notice a { @apply text-accentink2 font-extrabold underline; }
+
+  /* modal */
+  .modal-overlay { @apply fixed inset-0 flex items-center justify-center z-[1000] p-6; background: rgba(58,30,10,.55); }
+  .modal-card { @apply bg-surface border-2 border-line rounded-2xl max-w-[760px] w-full max-h-[86vh] overflow-auto pb-5;
+    box-shadow: 0 24px 60px rgba(58,30,10,.35); }
+  .modal-head { @apply flex items-center justify-between gap-4 py-[22px] px-[26px] border-b-2 border-divider mb-1; }
+  .modal-head h3 { @apply m-0 text-[23px]; }
+  .modal-card > *:not(.modal-head) { @apply mx-[26px]; }
+  .modal-close { @apply w-9 h-9 p-0 border-2 border-ghostb bg-transparent text-accentink2 text-lg; }
+  .modal-close:hover { @apply bg-ghosth; }
+  .filelist { @apply max-h-[48vh] overflow-auto my-2.5 border border-linesoft rounded-[10px]; }
+  .filelist table th { @apply sticky top-0 bg-surface2; }
+}
