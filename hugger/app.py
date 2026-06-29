@@ -212,7 +212,7 @@ def file_list(files: list[dict], *, submit_buttons: list, signals: dict | None =
         cells = [
             Td(Input(type="checkbox", value=f["path"], disabled=is_disabled,
                      **{"data-bind": "files"})),
-            Td(f["path"], cls="mono"),
+            Td(f["path"], cls="mono wrap"),
             Td(human_size(f["size"]), cls="muted"),
         ]
         status = statuses.get(f["path"]) if statuses is not None else None
@@ -413,9 +413,13 @@ THEME = Style(
     td{padding:16px 14px;border-bottom:1px solid var(--line-soft);vertical-align:middle;font-size:15px}
     th,td{white-space:nowrap}        /* numbers / pills / commits stay on one line */
     /* …but long model ids and paths wrap (the model link also caps its column) so
-       the numeric and action columns keep their space */
+       the numeric and action columns keep their space; short mono (commits) don't */
     td a.link{display:inline-block;max-width:430px;word-break:break-all;white-space:normal;vertical-align:middle}
-    td.mono,td .mono{word-break:break-all;white-space:normal}
+    td.wrap,td .wrap{white-space:normal;overflow-wrap:anywhere}
+    /* section header with a divider (h2 + an action), e.g. Archived models / Job history */
+    .section-head{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+      padding-bottom:14px;border-bottom:2px solid var(--divider);margin-bottom:16px}
+    .section-head h2{margin:0}
     /* right-aligned action button group for table rows — stays on one line */
     .actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:nowrap}
     .actions button,.actions .btn{height:36px;padding:0 14px;font-size:14px}
@@ -639,7 +643,7 @@ def archives_body():
         H2("Archived models"),
         ds_button("Check all for updates", "@post('/ui/check-all')",
                   indicator="_checkall", busy="Checking…", cls="ghost"),
-        cls="row",
+        cls="section-head",
     )
     return Div(header, body, id="archives-body")
 
@@ -1021,7 +1025,7 @@ def manage_page(req, sess, repo_id: str):
     )
     return page(
         info,
-        Div(manage_list_fragment(repo_id), cls="card"),
+        Div(H2("Files", style="font-size:20px;margin-bottom:8px"), manage_list_fragment(repo_id), cls="card"),
         Div(H2("Jobs"), jobs_panel(), cls="card"),
         sess=sess, active="archives",
     )
@@ -1111,10 +1115,10 @@ def job_history_fragment():
                  if j["status"] == "error" else "")
         rows.append(Tr(
             Td("⇄ move" if j["type"] == "move" else "⤓ download", cls="muted"),
-            Td(j["repo_id"], cls="mono"),
+            Td(j["repo_id"], cls="mono wrap"),
             Td(names.get(j["store_id"]) or "—", cls="muted"),
             Td(badge),
-            Td(detail[:90], cls="err" if detail else "muted"),
+            Td(detail[:90], cls="err wrap" if detail else "muted"),
             Td((j["updated_at"] or "")[:19].replace("T", " "), cls="muted mono"),
             Td(retry),
         ))
@@ -1125,7 +1129,7 @@ def job_history_fragment():
         H2("Job history"),
         ds_button("Clear finished", "@post('/ui/jobs/clear')",
                   indicator="_clearfin", busy="Clearing…", cls="ghost"),
-        cls="row",
+        cls="section-head",
     )
     return Div(header, body,
                P("Finished jobs (done/error) are kept for 30 days, then pruned on "
@@ -1227,7 +1231,7 @@ def stores_body(notice: str | None = None):
                 indicator=_sig("sx", sid), cls="danger"))
         rows.append(Tr(
             Td(s["name"]),
-            Td(s["path"], cls="mono muted"),
+            Td(s["path"], cls="mono muted wrap"),
             Td(f"{s['n_models']}", cls="muted"),
             Td(free, cls="muted"),
             Td(default_cell),
