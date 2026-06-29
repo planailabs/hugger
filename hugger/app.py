@@ -378,6 +378,10 @@ THEME = Style(
     input[type=text],input[type=password],input[type=search],select{height:44px;
       border:2px solid var(--input-border);border-radius:8px;padding:0 14px;font-size:15px;
       font-family:var(--sans);background:#fff;color:var(--ink)}
+    /* text fields grow to fill their row (design uses flex:1); selects/buttons keep
+       their size. .narrow opts a field out (e.g. the store name). */
+    .row>input[type=text],.row>input[type=password],.row>input[type=search]{flex:1 1 220px;min-width:200px}
+    .row>input.narrow{flex:0 0 auto;min-width:0;width:200px}
     select{cursor:pointer;padding:0 10px}
     input::placeholder{color:#A98C68}
 
@@ -778,7 +782,7 @@ def archives_page(sess):
 def login_form(req, error: str = ""):
     msg = P(error, cls="err") if error else ""
     return Title("hugger · login"), Div(
-        Header(H1("🤗 hugger")),
+        Header(Div(H1("🤗 hugger"), cls="bar")),
         Main(
             Div(
                 H2("Sign in"),
@@ -786,7 +790,7 @@ def login_form(req, error: str = ""):
                 Form(
                     Input(type="password", name="password", placeholder="password", autofocus=True),
                     action_button("Sign in", busy="Signing in…"),
-                    method="post", action="/login",
+                    method="post", action="/login", cls="row",
                 ),
                 cls="card",
             )
@@ -820,7 +824,7 @@ def change_password_form(sess, error: str = ""):
         if forced else ""
     )
     return Title("hugger · change password"), Div(
-        Header(H1("🤗 hugger")),
+        Header(Div(H1("🤗 hugger"), cls="bar")),
         Main(
             Div(
                 H2("Set a new password"),
@@ -829,7 +833,7 @@ def change_password_form(sess, error: str = ""):
                     Input(type="password", name="new", placeholder="new password", autofocus=True),
                     Input(type="password", name="confirm", placeholder="confirm new password"),
                     action_button("Save password", busy="Saving…"),
-                    method="post", action="/change-password",
+                    method="post", action="/change-password", cls="row",
                 ),
                 cls="card",
             )
@@ -1223,7 +1227,7 @@ def stores_body(notice: str | None = None):
         Tbody(*rows),
     )
     add = Div(
-        Input(type="text", placeholder="name", **{"data-bind": "sname"}),
+        Input(type="text", placeholder="name", cls="narrow", **{"data-bind": "sname"}),
         Input(type="text", placeholder="/absolute/path", **{"data-bind": "spath"}),
         ds_button("Add store", "@post('/ui/stores/add')", indicator="_addstore", busy="Adding…"),
         cls="row", **{"data-signals": json.dumps({"sname": "", "spath": ""})},
@@ -1311,7 +1315,7 @@ def settings(sess, msg: str = ""):
         Form(
             Input(type="password", name="token", placeholder="hf_… (leave blank and Clear to remove)"),
             action_button("Save token", busy="Saving…"),
-            method="post", action="/settings/hf-token",
+            method="post", action="/settings/hf-token", cls="row",
         ),
         (Form(action_button("Clear token", cls="danger", busy="Clearing…"), method="post", action="/settings/hf-token/clear")
          if src == "ui" else ""),
@@ -1323,7 +1327,7 @@ def settings(sess, msg: str = ""):
             Input(type="password", name="current", placeholder="current password"),
             Input(type="password", name="new", placeholder="new password"),
             action_button("Update password", busy="Updating…"),
-            method="post", action="/settings/password",
+            method="post", action="/settings/password", cls="row",
         ),
         cls="card",
     )
