@@ -22,7 +22,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import hub, metadata, store, util
+from . import _live, hub, metadata, store, util
 
 _dir_size = util.dir_size  # kept for tests/back-compat
 
@@ -70,6 +70,7 @@ class Job:
             "sha": self.sha, "error": self.error, "store_id": self.store_id,
             "src_store_id": self.src_store_id,
         })
+        _live.bump()  # wake the live SSE panels on any status change
 
     def as_dict(self) -> dict:
         return {
@@ -301,7 +302,10 @@ class JobManager:
 
             def poll():
                 while not poll_stop.is_set():
+                    prev = job.done_bytes
                     job.done_bytes = metadata.read_progress(dest, meta, base=base)
+                    if job.done_bytes != prev:
+                        _live.bump()  # push progress to the live panels as it changes
                     poll_stop.wait(1.0)
 
             threading.Thread(target=poll, daemon=True).start()
@@ -503,6 +507,7 @@ class JobManager:
         meta = metadata.read(model_dir)
         if meta:
             self._cache_archive(repo_id, meta, model_dir, rec["store_id"])
+        _live.bump()  # archive size/files changed -> refresh live panels
 
 
 manager = JobManager()
@@ -513,6 +518,7 @@ def delete_archive(repo_id: str) -> None:
     if rec:
         shutil.rmtree(rec["path"], ignore_errors=True)
     store.delete_archive_and_hashes(repo_id)
+    _live.bump()
 
 
 def check_update(repo_id: str) -> dict:
@@ -522,6 +528,7 @@ def check_update(repo_id: str) -> dict:
     rsha = hub.remote_sha(repo_id, rec["revision"])
     available = rsha != rec["sha"]
     store.set_update_status(repo_id, rsha, available)
+    _live.bump()
     return {"repo_id": repo_id, "local": rec["sha"], "remote": rsha, "update_available": available}
 
 
@@ -544,6 +551,8 @@ def import_store(store_id: str) -> int:
             n_downloaded=state["n_downloaded"], complete=state["complete"],
         )
         count += 1
+    if count:
+        _live.bump()
     return count
 
 

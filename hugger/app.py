@@ -17,8 +17,8 @@ from urllib.parse import quote
 from datastar_py import ServerSentEventGenerator as SSE
 from datastar_py.fasthtml import DatastarResponse, read_signals
 from fasthtml.common import *  # noqa: F403  (FT tags, fast_app, serve, Beforeware, RedirectResponse)
+from starlette.datastructures import MutableHeaders
 from starlette.middleware import Middleware
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import JSONResponse
@@ -27,7 +27,7 @@ from starlette.staticfiles import StaticFiles
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
-from . import auth, hub, jobs, metadata, store, util
+from . import _live, auth, hub, jobs, metadata, store, util
 from .config import ARCHIVE_DIR, cfg
 from .hub import search_models
 
@@ -107,18 +107,25 @@ def live_panel(body, *, wrapper_id: str, stream_url: str):
     return Div(body, id=wrapper_id, **{"data-init": f"@get('{stream_url}')"})
 
 
-def sse_stream(render, *, interval: float = 1.0):
-    """DatastarResponse for a long-lived stream that morphs `render()`'s element
-    whenever its rendered HTML changes — idle pages send nothing, so this replaces
-    htmx polling. `render` returns an FT element with a stable id."""
+def sse_stream(render, *, keepalive: float = 20.0):
+    """DatastarResponse for a long-lived, event-driven stream. It morphs
+    `render()`'s element whenever the app signals a change (`_live.bump()`), not on
+    a timer — idle state means no wakeups and no traffic. It re-renders on wake and
+    pushes a patch only if the HTML actually changed. `keepalive` is just a slow
+    heartbeat (proxy keep-alive / belt-and-braces); `render` returns an FT element
+    with a stable id."""
     async def gen():
         last = None
-        while True:
-            html = to_xml(render())
-            if html != last:
-                yield SSE.patch_elements(html)
-                last = html
-            await asyncio.sleep(interval)
+        seen = _live.version()
+        try:
+            while not _live.is_shutting_down():
+                html = to_xml(render())
+                if html != last:
+                    yield SSE.patch_elements(html)
+                    last = html
+                seen = await _live.wait(seen, keepalive)
+        except asyncio.CancelledError:
+            return  # client navigated away / server shutting down — stop cleanly
     return DatastarResponse(gen())
 
 
@@ -230,30 +237,44 @@ def file_statuses(repo_id: str, files: list[dict]):
 
 # --- security middleware -------------------------------------------------
 
-class SecurityHeaders(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        if request.method in ("GET", "HEAD"):
-            request.scope["headers"] = [
-                h for h in request.scope["headers"] if h[0] != b"content-type"
-            ]
-        resp = await call_next(request)
-        resp.headers["X-Content-Type-Options"] = "nosniff"
-        resp.headers["X-Frame-Options"] = "DENY"
-        resp.headers["Referrer-Policy"] = "no-referrer"
-        # ponytail: moderate CSP — allows inline (htmx attrs) + the CDN FastHTML
-        # loads htmx from. Tighten to 'self' if you self-host htmx.
-        # All scripts are self-hosted from /static (no CDN, no inline script), so
-        # script-src is just 'self' plus 'unsafe-eval' — which Datastar needs to
-        # evaluate data-* expressions via the Function constructor. SSE actions use
-        # same-origin fetch (connect-src).
-        resp.headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            "script-src 'self' 'unsafe-eval'; "
-            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
-        )
-        if cfg.https_only:
-            resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        return resp
+# All scripts are self-hosted from /static (no CDN, no inline script), so
+# script-src is just 'self' plus 'unsafe-eval' — which Datastar needs to evaluate
+# data-* expressions via the Function constructor. SSE actions use same-origin
+# fetch (connect-src).
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-eval'; "
+    "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
+)
+
+
+class SecurityHeaders:
+    """Pure-ASGI security-header middleware. Pure ASGI (not BaseHTTPMiddleware) so
+    it doesn't wrap streaming responses in a memory stream — that buffering hurts
+    SSE flushing and throws a CancelledError traceback when long-lived streams are
+    cancelled on shutdown."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        if scope["method"] in ("GET", "HEAD"):
+            scope = dict(scope, headers=[h for h in scope["headers"] if h[0] != b"content-type"])
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                h = MutableHeaders(scope=message)
+                h["X-Content-Type-Options"] = "nosniff"
+                h["X-Frame-Options"] = "DENY"
+                h["Referrer-Policy"] = "no-referrer"
+                h["Content-Security-Policy"] = _CSP
+                if cfg.https_only:
+                    h["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
 
 
 def _middleware() -> list:
@@ -1047,12 +1068,12 @@ async def ui_job_retry(req, sess, job_id: str):
 
 @rt("/ui/archives", methods=["GET"])
 async def ui_archives():
-    return sse_stream(archives_body, interval=5)
+    return sse_stream(archives_body)
 
 
 @rt("/ui/summary", methods=["GET"])
 async def ui_summary():
-    return sse_stream(summary_fragment, interval=5)
+    return sse_stream(summary_fragment)
 
 
 @rt("/ui/check/{repo_id:path}", methods=["POST"])
@@ -1411,7 +1432,31 @@ def main() -> None:
     import uvicorn
 
     print(f"hugger {VERSION} → http://{cfg.host}:{cfg.port}")
-    uvicorn.run(app, host=cfg.host, port=cfg.port)
+    # The live panels hold long-lived SSE connections that never end on their own.
+    # Run uvicorn ourselves so that, the moment shutdown begins, we wake every
+    # stream (_live.begin_shutdown) — they return cleanly, the connections close,
+    # and the server exits at once with no force-cancel traceback or hang.
+    config = uvicorn.Config(app, host=cfg.host, port=cfg.port, timeout_graceful_shutdown=5)
+    server = uvicorn.Server(config)
+
+    async def _serve():
+        _live.bind_loop(asyncio.get_running_loop())
+
+        async def _watch_shutdown():
+            while not server.should_exit:
+                await asyncio.sleep(0.1)
+            _live.begin_shutdown()
+
+        watcher = asyncio.ensure_future(_watch_shutdown())
+        try:
+            await server.serve()
+        finally:
+            watcher.cancel()
+
+    try:
+        asyncio.run(_serve())
+    except KeyboardInterrupt:
+        pass  # uvicorn already shut down gracefully on the signal
 
 
 if __name__ == "__main__":
