@@ -63,11 +63,12 @@ def _ds_get(cli, url, csrf=None, **signals):
 
 
 def _csrf(cli):
-    """Pull the per-session CSRF token out of the rendered dashboard."""
+    """Pull the per-session CSRF token out of the rendered dashboard (it's carried
+    as the Datastar `csrf` signal on #app)."""
     html = cli.get("/").text
-    m = re.search(r"X-CSRF-Token[^A-Za-z0-9_\-]+([A-Za-z0-9_\-]{20,})", html)
+    m = re.search(r'csrf&#39;?:\s*&#39;?([A-Za-z0-9_\-]{20,})|"csrf":\s*"([A-Za-z0-9_\-]{20,})', html)
     assert m, "CSRF token not found in page"
-    return m.group(1)
+    return m.group(1) or m.group(2)
 
 
 # --- API auth ------------------------------------------------------------
@@ -377,6 +378,18 @@ def test_security_headers_present():
     # Datastar's expression evaluator needs unsafe-eval in script-src.
     assert "'unsafe-eval'" in h["content-security-policy"]
     assert h["referrer-policy"] == "no-referrer"
+
+
+def test_no_htmx_only_self_hosted_scripts():
+    cli = _setup_client()
+    _login(cli)
+    r = cli.get("/")
+    html = r.text
+    assert "htmx" not in html.lower()  # htmx fully removed
+    assert "cdn.jsdelivr" not in html and "unpkg" not in html  # nothing from a CDN
+    assert "<script>" not in html  # no inline scripts
+    # script-src is locked to self + unsafe-eval (for Datastar's evaluator) only
+    assert "script-src 'self' 'unsafe-eval';" in r.headers["content-security-policy"]
 
 
 def test_datastar_runtime_self_hosted():

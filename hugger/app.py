@@ -90,7 +90,7 @@ def ds_button(label: str, action: str, *, indicator: str, busy: str | None = Non
         **{"data-on-click": action,
            "data-indicator": indicator,
            "data-attr-disabled": f"${indicator}",
-           "data-class": '{"htmx-request": $%s}' % indicator},
+           "data-class": '{"is-busy": $%s}' % indicator},
         **kw,
     )
 
@@ -243,12 +243,13 @@ class SecurityHeaders(BaseHTTPMiddleware):
         resp.headers["Referrer-Policy"] = "no-referrer"
         # ponytail: moderate CSP — allows inline (htmx attrs) + the CDN FastHTML
         # loads htmx from. Tighten to 'self' if you self-host htmx.
-        # Datastar evaluates data-* expressions via the Function constructor, so
-        # script-src needs 'unsafe-eval'. The runtime is self-hosted from /static,
-        # so no CDN hosts are needed. SSE actions use same-origin fetch (connect-src).
+        # All scripts are self-hosted from /static (no CDN, no inline script), so
+        # script-src is just 'self' plus 'unsafe-eval' — which Datastar needs to
+        # evaluate data-* expressions via the Function constructor. SSE actions use
+        # same-origin fetch (connect-src).
         resp.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+            "script-src 'self' 'unsafe-eval'; "
             "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
         )
         if cfg.https_only:
@@ -342,12 +343,12 @@ THEME = Style(
     /* interactive buttons: while their request is in flight, recolor + show busy label */
     button{transition:background .12s ease}
     button .busy{display:none}
-    button.htmx-request{background:var(--accent-2);cursor:progress}
-    button.htmx-request.danger{background:#B71C1C}
+    button.is-busy{background:var(--accent-2);cursor:progress}
+    button.is-busy.danger{background:#B71C1C}
     a.btn{text-decoration:none;display:inline-block;font-size:.95rem}
     a.btn.ghost{background:transparent;color:var(--accent-2);border:1px solid var(--accent)}
-    button.htmx-request .idle{display:none}
-    button.htmx-request .busy{display:inline}
+    button.is-busy .idle{display:none}
+    button.is-busy .busy{display:inline}
     /* modal */
     .modal-overlay{position:fixed;inset:0;background:rgba(40,20,0,.45);display:flex;
       align-items:center;justify-content:center;z-index:1000;padding:1rem}
@@ -362,32 +363,23 @@ THEME = Style(
     """
 )
 
-# Make every form's submit button show busy feedback. htmx puts `htmx-request`
-# on the *form* (or a standalone hx button), not on a submit button inside a
-# form — so those buttons never recolor/swap label. Add the class to the
-# submitter on submit (covers plain full-page forms and htmx forms alike) and
-# clear it again when htmx finishes, so htmx forms don't stick on "busy".
-BUSY_FEEDBACK = Script(
-    "document.addEventListener('submit',function(e){"
-    "var b=e.submitter;"
-    "if(b&&b.tagName==='BUTTON')b.classList.add('htmx-request');"
-    "},true);"
-    "document.body.addEventListener('htmx:afterRequest',function(e){"
-    "var t=e.target;"
-    "if(t&&t.querySelectorAll)t.querySelectorAll('button.htmx-request')"
-    ".forEach(function(b){b.classList.remove('htmx-request');});"
-    "});"
+# Head tags, all self-hosted (no CDN, tight CSP). Datastar drives interactivity;
+# busy.js only adds busy feedback to the plain full-page forms (login/settings).
+HEAD = (
+    Meta(charset="utf-8"),
+    Meta(name="viewport", content="width=device-width, initial-scale=1"),
+    THEME,
+    Script(type="module", src="/static/datastar.js"),
+    Script(src="/static/busy.js"),
 )
-
-# Datastar runtime, self-hosted from /static (vendored hugger/static/datastar.js).
-DATASTAR = Script(type="module", src="/static/datastar.js")
 
 app, rt = fast_app(
     secret_key=cfg.secret_key,
     before=beforeware,
     middleware=_middleware(),
     pico=False,
-    hdrs=(THEME, BUSY_FEEDBACK, DATASTAR),
+    default_hdrs=False,  # no htmx / fasthtml-js / surreal / css-scope-inline
+    hdrs=HEAD,
     # On graceful shutdown, mark in-flight jobs queued (not failed) so they resume.
     on_shutdown=[jobs.manager.shutdown],
 )
@@ -610,9 +602,8 @@ def page(*content, sess=None):
         Main(*content),
         Div(id="modal"),  # action modals (file lists) render here
         id="app",
-        hx_headers=json.dumps({"X-CSRF-Token": csrf}),
-        # CSRF for Datastar actions: rides as the `csrf` signal (body for POST,
-        # query for GET). htmx requests keep using the header above.
+        # CSRF for Datastar actions rides as the `csrf` signal (JSON body for POST,
+        # `datastar` query for GET).
         **{"data-signals": json.dumps({"csrf": csrf})},
     )
 
@@ -744,7 +735,6 @@ def change_password_form(sess, error: str = ""):
             )
         ),
         id="app",
-        hx_headers=json.dumps({"X-CSRF-Token": auth.csrf_token(sess)}),
     )
 
 
