@@ -67,10 +67,6 @@ def human_size(n: int) -> str:
     return f"{f:.1f} TB"
 
 
-def _csrf_value(req, form_val: str | None) -> str | None:
-    return req.headers.get("x-csrf-token") or form_val
-
-
 async def _ds_csrf_ok(req, sess) -> bool:
     """CSRF check for Datastar actions: the token rides as the `csrf` signal
     (sent in the JSON body for POST, the `datastar` query for GET)."""
@@ -133,8 +129,10 @@ def patch(*elements):
 # --- interactive UI helpers ----------------------------------------------
 
 def action_button(label: str, *, busy: str | None = None, **kw):
-    """A button that, while its HTMX request is in flight, recolors and shows a
-    busy label (e.g. "Download" -> "Downloading…"). CSS toggles idle/busy spans."""
+    """Submit button for the plain full-page forms (login/settings). busy.js adds
+    the `is-busy` class on submit; CSS then recolors and swaps to the busy label
+    (e.g. "Save" -> "Saving…") until the page navigates. Datastar buttons use
+    ds_button instead."""
     if busy is None:
         busy = label.rstrip(".… ") + "…"
     return Button(Span(label, cls="idle"), Span(busy, cls="busy"), **kw)
@@ -752,12 +750,6 @@ def change_password(sess, new: str = "", confirm: str = ""):
 def logout(sess):
     sess.clear()
     return RedirectResponse("/login", status_code=303)
-
-
-# --- UI fragments (HTMX, session + CSRF) ---------------------------------
-
-def _guard_csrf(req, sess, csrf):
-    return auth.csrf_ok(sess, _csrf_value(req, csrf))
 
 
 @rt("/ui/search", methods=["POST"])
