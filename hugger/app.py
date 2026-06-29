@@ -382,8 +382,15 @@ THEME = Style(
        their size. .narrow opts a field out (e.g. the store name). */
     .row>input[type=text],.row>input[type=password],.row>input[type=search]{flex:1 1 220px;min-width:200px}
     .row>input.narrow{flex:0 0 auto;min-width:0;width:200px}
+    /* repo ids / paths / tokens are monospace (design); search & passwords stay sans */
+    input.mono{font-family:var(--mono);font-size:14px}
     select{cursor:pointer;padding:0 10px}
     input::placeholder{color:#A98C68}
+    /* vertical rhythm helpers */
+    .mb{margin-bottom:18px}
+    .mb-sm{margin-bottom:14px}
+    .divider-top{border-top:2px solid var(--divider);padding-top:18px}
+    .job>*+*{margin-top:12px}
 
     button,.btn{cursor:pointer;display:inline-flex;align-items:center;justify-content:center;
       gap:7px;height:40px;padding:0 18px;border-radius:8px;border:2px solid var(--accent);
@@ -748,12 +755,16 @@ def index(sess):
         cls="card",
     )
     manual = Div(
-        Input(type="text", placeholder="org/model — archive by id", **{"data-bind": "repo"}),
+        Input(type="text", placeholder="org/model — archive by id", cls="mono", **{"data-bind": "repo"}),
         ds_button("⤓ Archive…", "@get('/ui/files')", indicator="_arch", busy="Opening…"),
-        cls="row",
+        cls="row mb",
     )
     downloads = Div(
-        H2("Downloads"), store_selector(), manual, jobs_panel(), cls="card",
+        H2("Downloads"),
+        Div(store_selector(), cls="mb-sm"),
+        manual,
+        Div(jobs_panel(), cls="divider-top"),
+        cls="card",
     )
     blocks = []
     if hub.hf_token_source() == "none":
@@ -1227,8 +1238,8 @@ def stores_body(notice: str | None = None):
         Tbody(*rows),
     )
     add = Div(
-        Input(type="text", placeholder="name", cls="narrow", **{"data-bind": "sname"}),
-        Input(type="text", placeholder="/absolute/path", **{"data-bind": "spath"}),
+        Input(type="text", placeholder="name", cls="narrow mono", **{"data-bind": "sname"}),
+        Input(type="text", placeholder="/absolute/path", cls="mono", **{"data-bind": "spath"}),
         ds_button("Add store", "@post('/ui/stores/add')", indicator="_addstore", busy="Adding…"),
         cls="row", **{"data-signals": json.dumps({"sname": "", "spath": ""})},
     )
@@ -1313,7 +1324,7 @@ def settings(sess, msg: str = ""):
         H2("HuggingFace token"),
         P("Needed to download gated or private models. ", Span(src_label, cls="muted")),
         Form(
-            Input(type="password", name="token", placeholder="hf_… (leave blank and Clear to remove)"),
+            Input(type="password", name="token", placeholder="hf_… (leave blank and Clear to remove)", cls="mono"),
             action_button("Save token", busy="Saving…"),
             method="post", action="/settings/hf-token", cls="row",
         ),
