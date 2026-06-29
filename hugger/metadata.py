@@ -23,17 +23,21 @@ def progress_file(model_dir: Path | str) -> Path:
     return Path(model_dir) / PROGRESS_NAME
 
 
-def read_progress(model_dir: Path | str, meta: dict) -> int:
-    """Live downloaded bytes for the progress bar. Uses the larger of the hf
-    progress file (the library's reported bytes) and the actual on-disk size
-    (completed files + in-flight `.incomplete` staging), so it always reflects
-    unfinished files and never regresses on resume. Capped at total_size."""
+def read_progress(model_dir: Path | str, meta: dict, base: int = 0) -> int:
+    """Live downloaded bytes for the progress bar.
+
+    hf's tqdm only counts the files it actually fetches — files already present
+    are skipped, so the reported `n` is the *missing* portion only. We add `base`
+    (bytes already on disk when this run started) to it, and take the larger of
+    that and the raw on-disk size (completed files + in-flight `.incomplete`), so
+    progress reflects the full total on both classic and Xet and never regresses.
+    Capped at total_size."""
     fs = progress_bytes(model_dir, meta)
     try:
         n = int(progress_file(model_dir).read_text().split()[0])
+        best = max(fs, base + n)
     except (OSError, ValueError, IndexError):
-        n = 0
-    best = max(n, fs)
+        best = fs
     total = meta.get("total_size", 0) or best
     return max(0, min(total, best))
 

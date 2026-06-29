@@ -152,6 +152,18 @@ class JobManager:
                 return j
         return None
 
+    def active_download_files(self, repo_id: str) -> set[str]:
+        """Files a queued/running download for `repo_id` is fetching (from its
+        metadata's selection) — used to mark them 'downloading' and lock them."""
+        for j in self._jobs.values():
+            if j.type == "download" and j.repo_id == repo_id and j.status in ("queued", "running"):
+                st = store.get_store(j.store_id)
+                if st:
+                    meta = metadata.read(store_repo_path(st["path"], repo_id))
+                    if meta:
+                        return set(meta.get("selected", []))
+        return set()
+
     def start_move(self, repo_id: str, dest_store_id: str) -> Job:
         # Edge case: a download for this model is in flight.
         dl = self._active_download_for(repo_id)
@@ -278,14 +290,18 @@ class JobManager:
                 meta = metadata.build(job.repo_id, job.revision, info["sha"], info["files"], None)
                 metadata.write(dest, meta)
             job.total_bytes = meta["total_size"]; job.sha = meta["sha"]
-            # Seed from what's already on disk so a resumed job shows its real
-            # progress immediately instead of flashing 0%.
-            job.done_bytes = metadata.read_progress(dest, meta)
+            # Bytes already complete on disk before this run. hf's tqdm only counts
+            # the files it (re)downloads, so we add this base to its reported bytes
+            # to show the full total. Clear any stale progress file first.
+            base = metadata.state(dest, meta)["downloaded_bytes"]
+            metadata.progress_file(dest).unlink(missing_ok=True)
+            # Seed from on-disk progress so a resumed job shows real progress now.
+            job.done_bytes = metadata.read_progress(dest, meta, base=base)
             job.persist()
 
             def poll():
                 while not poll_stop.is_set():
-                    job.done_bytes = metadata.read_progress(dest, meta)
+                    job.done_bytes = metadata.read_progress(dest, meta, base=base)
                     poll_stop.wait(1.0)
 
             threading.Thread(target=poll, daemon=True).start()

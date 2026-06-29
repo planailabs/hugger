@@ -141,17 +141,23 @@ async function toggleFiles() {
     row.style.cssText = "display:flex;align-items:center;gap:8px;padding:3px 0";
     const cb = document.createElement("input");
     cb.type = "checkbox";
-    cb.checked = !file.downloaded;
+    // files already downloaded or currently downloading can't be (re)selected
+    cb.disabled = file.downloaded || file.downloading;
+    cb.checked = !cb.disabled;
     cb.dataset.path = file.path;
     const name = document.createElement("span");
     name.style.cssText = "flex:1;font-family:ui-monospace,monospace";
-    name.textContent = file.path + (file.downloaded ? " ✓" : "");
+    const tag = file.downloaded ? " ✓" : file.downloading ? " ⏳ downloading" : "";
+    name.textContent = file.path + tag;
+    if (file.downloading) name.style.color = "#FB8C00";
     const sz = document.createElement("span");
     sz.style.cssText = "color:#8D6E63";
     sz.textContent = fmtSize(file.size);
     const one = button(null, "⤓", "#FB8C00");
     one.style.padding = "4px 9px";
-    one.onclick = (e) => { e.preventDefault(); archive([file.path], one); };
+    one.disabled = file.downloaded || file.downloading;
+    one.style.opacity = one.disabled ? "0.4" : "1";
+    one.onclick = (e) => { e.preventDefault(); if (!one.disabled) archive([file.path], one); };
     row.append(cb, name, sz, one);
     list.appendChild(row);
   }

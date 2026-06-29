@@ -97,10 +97,13 @@ def _modal_oob(*content):
 
 
 def file_list(files: list[dict], *, action: str, submit_buttons: list, hidden: dict | None = None,
-              preselect=None, statuses: dict | None = None, removable_repo: str | None = None):
+              preselect=None, statuses: dict | None = None, removable_repo: str | None = None,
+              disabled=None):
     """Reusable file picker: checkbox + path + size, optional status + per-file
-    remove. `files` items: {path, size}. Returns a Form posting to `action`."""
+    remove. `disabled` paths can't be selected (e.g. files currently downloading).
+    `files` items: {path, size}. Returns a Form posting to `action`."""
     preselect = preselect if preselect is not None else {f["path"] for f in files}
+    disabled = disabled or set()
     head = [Th(""), Th("File"), Th("Size")]
     if statuses is not None:
         head.append(Th("Status"))
@@ -108,8 +111,10 @@ def file_list(files: list[dict], *, action: str, submit_buttons: list, hidden: d
         head.append(Th(""))
     rows = []
     for f in files:
+        is_disabled = f["path"] in disabled
         cells = [
-            Td(Input(type="checkbox", name="files", value=f["path"], checked=f["path"] in preselect)),
+            Td(Input(type="checkbox", name="files", value=f["path"],
+                     checked=(f["path"] in preselect and not is_disabled), disabled=is_disabled)),
             Td(f["path"], cls="mono"),
             Td(human_size(f["size"]), cls="muted"),
         ]
@@ -129,6 +134,23 @@ def file_list(files: list[dict], *, action: str, submit_buttons: list, hidden: d
         Div(*submit_buttons, cls="row"),
         hx_post=action, hx_target="#jobs", hx_swap="outerHTML",
     )
+
+
+def file_statuses(repo_id: str, files: list[dict]):
+    """Per-file status (downloaded / downloading / missing) + the set of paths
+    that are currently downloading (and so can't be selected)."""
+    rec = store.get_archive(repo_id)
+    downloading = jobs.manager.active_download_files(repo_id)
+    statuses = {}
+    for f in files:
+        if rec and metadata.file_downloaded(rec["path"], f["path"], f["size"]):
+            statuses[f["path"]] = "downloaded"
+        elif f["path"] in downloading:
+            statuses[f["path"]] = "downloading"
+        else:
+            statuses[f["path"]] = "missing"
+    locked = {p for p, s in statuses.items() if s == "downloading"}
+    return statuses, locked
 
 
 # --- security middleware -------------------------------------------------
@@ -653,19 +675,13 @@ def _archive_modal(repo_id: str, store_id: str, notice: str | None = None):
         info = hub.repo_files(repo_id)
     except Exception as e:
         return modal("Archive", P(f"Could not list files for {repo_id}: {e}", cls="err"))
-    rec = store.get_archive(repo_id)
-    statuses = None
-    if rec:
-        statuses = {
-            f["path"]: ("downloaded" if metadata.file_downloaded(rec["path"], f["path"], f["size"]) else "missing")
-            for f in info["files"]
-        }
+    statuses, locked = file_statuses(repo_id, info["files"])
     total = sum(f["size"] for f in info["files"])
     head = [P(notice, cls="err")] if notice else []
     head.append(P(f"Total {human_size(total)} · {len(info['files'])} files", cls="muted"))
     form = file_list(
         info["files"], action="/ui/archive",
-        hidden={"repo_id": repo_id, "store_id": store_id or ""}, statuses=statuses,
+        hidden={"repo_id": repo_id, "store_id": store_id or ""}, statuses=statuses, disabled=locked,
         submit_buttons=[
             action_button("⤓ Download all", name="mode", value="all"),
             action_button("⤓ Download selected", name="mode", value="selected", cls="ghost"),
@@ -763,14 +779,11 @@ def manage_list_fragment(repo_id: str):
         info = hub.repo_files(repo_id, rec["revision"])
     except Exception as e:
         return Div(P(f"Could not list files: {e}", cls="err"), id="managelist")
-    statuses = {
-        f["path"]: ("downloaded" if metadata.file_downloaded(rec["path"], f["path"], f["size"]) else "missing")
-        for f in info["files"]
-    }
+    statuses, locked = file_statuses(repo_id, info["files"])
     preselect = {p for p, s in statuses.items() if s == "missing"}  # default: fetch missing
     form = file_list(
         info["files"], action=f"/ui/manage/{repo_id}", statuses=statuses,
-        preselect=preselect, removable_repo=repo_id,
+        preselect=preselect, removable_repo=repo_id, disabled=locked,
         submit_buttons=[action_button("⤓ Download selected")],
     )
     return Div(form, id="managelist")
@@ -1191,11 +1204,15 @@ def api_files(req):
         info = hub.repo_files(repo_id, revision)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=502)
-    rec = store.get_archive(repo_id)
+    statuses, _ = file_statuses(repo_id, info["files"])
     out = []
     for f in info["files"]:
-        downloaded = bool(rec) and metadata.file_downloaded(rec["path"], f["path"], f["size"])
-        out.append({"path": f["path"], "size": f["size"], "downloaded": downloaded})
+        st = statuses[f["path"]]
+        out.append({
+            "path": f["path"], "size": f["size"],
+            "downloaded": st == "downloaded",
+            "downloading": st == "downloading",
+        })
     return JSONResponse({"repo_id": repo_id, "sha": info["sha"], "files": out})
 
 

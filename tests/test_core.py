@@ -216,13 +216,17 @@ def test_progress_bytes_counts_incomplete():
 
 def test_read_progress_from_file():
     d = Path(_TMP) / "rp"
-    meta = metadata.build("o/r", "main", "s", [{"path": "big.bin", "size": 1000}], None)
+    meta = metadata.build("o/r", "main", "s",
+                          [{"path": "a.bin", "size": 400}, {"path": "big.bin", "size": 600}], None)
     metadata.write(d, meta)
     assert metadata.read_progress(d, meta) == 0  # no file -> fs fallback
-    metadata.progress_file(d).write_text("600 1000")
-    assert metadata.read_progress(d, meta) == 600
-    metadata.progress_file(d).write_text("5000 1000")  # capped at total
-    assert metadata.read_progress(d, meta) == 1000
+    # hf reports only the missing portion (n); base (already-present) is added in.
+    metadata.progress_file(d).write_text("100 600")
+    assert metadata.read_progress(d, meta, base=400) == 500  # 400 done + 100 this run
+    metadata.progress_file(d).write_text("600 600")
+    assert metadata.read_progress(d, meta, base=400) == 1000  # complete
+    metadata.progress_file(d).write_text("9999 600")  # capped at total
+    assert metadata.read_progress(d, meta, base=400) == 1000
 
 
 def test_job_history_and_clear():
