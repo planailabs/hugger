@@ -7,11 +7,26 @@
     gitlab-incus-image.url = "git+https://git.mkg20001.io/mkg20001/gitlab-incus-image.git";
     xzar.url = "github:mkg20001/xzar";
     xzar.inputs.nixpkgs.follows = "nixpkgs";
+
+    # Build the app straight from uv.lock so the store gets the exact pinned
+    # versions (hf 1.21 / hf-xet 1.5.1) rather than nixpkgs' older ones — the
+    # resumable-Xet path needs hf_xet's byte-range streaming API.
+    pyproject-nix.url = "github:pyproject-nix/pyproject.nix";
+    pyproject-nix.inputs.nixpkgs.follows = "nixpkgs";
+    uv2nix.url = "github:pyproject-nix/uv2nix";
+    uv2nix.inputs.pyproject-nix.follows = "pyproject-nix";
+    uv2nix.inputs.nixpkgs.follows = "nixpkgs";
+    pyproject-build-systems.url = "github:pyproject-nix/build-system-pkgs";
+    pyproject-build-systems.inputs.pyproject-nix.follows = "pyproject-nix";
+    pyproject-build-systems.inputs.uv2nix.follows = "uv2nix";
+    pyproject-build-systems.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, flake-utils, gitlab-incus-image, xzar }:
+  outputs = { self, nixpkgs, flake-utils, gitlab-incus-image, xzar
+            , pyproject-nix, uv2nix, pyproject-build-systems }:
     flake-utils.lib.eachDefaultSystem (system:
       let
+        lib = nixpkgs.lib;
         pkgs = nixpkgs.legacyPackages.${system};
         python = pkgs.python313;
         # Python with hugger's runtime deps + selenium, for running the test suite
@@ -21,7 +36,33 @@
         ]);
       in
       let
-        hugger = pkgs.python3Packages.callPackage ./nixos/package.nix { };
+        # uv2nix: load uv.lock, prefer prebuilt wheels (so hf-xet's manylinux
+        # wheel is patched in, not compiled from Rust), then build a venv that
+        # carries the `hugger` entry point.
+        workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = ./.; };
+        pyprojectOverlay = workspace.mkPyprojectOverlay { sourcePreference = "wheel"; };
+        pyprojectOverrides = _final: prev: {
+          hugger = prev.hugger.overrideAttrs (old: {
+            src = lib.cleanSourceWith {
+              src = ./.;
+              filter = path: _type:
+                let b = baseNameOf path;
+                in !(builtins.elem b [ ".venv" "result" ".hugger" ]);
+            };
+          });
+        };
+        pythonSet = (pkgs.callPackage pyproject-nix.build.packages { inherit python; }).overrideScope
+          (lib.composeManyExtensions [
+            pyproject-build-systems.overlays.default
+            pyprojectOverlay
+            pyprojectOverrides
+          ]);
+        hugger = (pythonSet.mkVirtualEnv "hugger-env" workspace.deps.default).overrideAttrs (old: {
+          meta = (old.meta or { }) // {
+            mainProgram = "hugger";
+            description = "A HuggingFace model archiver (web UI + browser extension)";
+          };
+        });
       in
       {
         packages = {
