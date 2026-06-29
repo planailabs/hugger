@@ -308,6 +308,11 @@ class JobManager:
 
             env = dict(os.environ)
             env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
+            # Keep hf's working cache (Xet chunk cache HF_XET_CACHE=$HF_HOME/xet,
+            # etc.) on the target store's volume — not the process home — so it
+            # doesn't bloat / fill another filesystem and stays with the data.
+            # (We pass the token explicitly, so HF_HOME isn't used for auth.)
+            env["HF_HOME"] = str(Path(st["path"]) / ".hf")
             # NOTE: do NOT disable Xet here (see AGENTS.md). Xet is the fast default
             # transfer. Progress is synced from hf's tqdm bytes bar; on the classic
             # path .incomplete files also let read_progress reflect bytes-on-disk.
