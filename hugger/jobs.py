@@ -260,6 +260,22 @@ class JobManager:
         return list(self._jobs.values())
 
     # --- restart recovery -------------------------------------------------
+    def _on_disk_bytes(self, job: Job) -> int:
+        """Bytes already downloaded for `job`, computed from disk — so a job loaded
+        from the DB (which doesn't persist done_bytes) shows real progress, not 0.
+        Matters most for paused jobs, which never spawn the poll that would seed it."""
+        if job.type != "download":
+            return 0
+        try:
+            st = store.get_store(job.store_id)
+            if not st:
+                return 0
+            dest = store_repo_path(st["path"], job.repo_id)
+            meta = metadata.read(dest)
+            return metadata.read_progress(dest, meta) if meta else 0
+        except Exception:
+            return 0
+
     def resume_pending(self) -> None:
         for row in store.list_jobs(["queued", "running", "paused"]):
             job = Job(
@@ -268,6 +284,7 @@ class JobManager:
                 store_id=row["store_id"], src_store_id=row["src_store_id"],
                 status="paused" if row["status"] == "paused" else "queued",
             )
+            job.done_bytes = self._on_disk_bytes(job)  # seed progress from disk
             with self._lock:
                 self._jobs[job.id] = job
             if job.status != "paused":

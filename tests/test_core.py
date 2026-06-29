@@ -252,6 +252,24 @@ def test_shutdown_marks_running_queued():
         jobs.manager._jobs.pop("sd1", None)
 
 
+def test_paused_job_progress_seeded_from_disk():
+    """A job loaded from the DB (done_bytes isn't persisted) must show real
+    on-disk progress, not 0 — the bug paused jobs hit on restart."""
+    a = store.get_default_store()["id"]
+    repo = "org/paused-progress"
+    mdir = jobs.store_repo_path(store.get_store(a)["path"], repo)
+    metadata.write(mdir, metadata.build(
+        repo, "main", "s",
+        [{"path": "a.bin", "size": 100}, {"path": "b.bin", "size": 50}],
+        ["a.bin", "b.bin"]))
+    (mdir / "a.bin").write_bytes(b"x" * 100)  # one file fully downloaded
+    j = jobs.Job(id="pp1", repo_id=repo, revision="main", type="download",
+                 total_bytes=150, store_id=a, status="paused")
+    assert jobs.manager._on_disk_bytes(j) == 100
+    j.done_bytes = jobs.manager._on_disk_bytes(j)
+    assert j.percent == 66  # 100 / 150, not 0
+
+
 def test_retry_error_job():
     a = store.get_default_store()["id"]
     repo = "org/retry"
