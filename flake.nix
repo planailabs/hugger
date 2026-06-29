@@ -17,8 +17,35 @@
           fasthtml huggingface-hub yoyo-migrations argon2-cffi uvicorn selenium
         ]);
       in
+      let
+        hugger = pkgs.python3Packages.callPackage ./nixos/package.nix { };
+      in
       {
-        packages.default = pkgs.python3Packages.callPackage ./nixos/package.nix { };
+        packages = {
+          default = hugger;
+        } // nixpkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          # OCI image built with nix's native dockerTools — no Dockerfile/daemon.
+          docker = pkgs.dockerTools.buildLayeredImage {
+            name = "hugger";
+            tag = "latest";
+            contents = [ hugger pkgs.cacert pkgs.dockerTools.fakeNss ];
+            extraCommands = ''
+              mkdir -p tmp data && chmod 1777 tmp
+            '';
+            config = {
+              Entrypoint = [ (pkgs.lib.getExe hugger) ];
+              WorkingDir = "/data";
+              Env = [
+                "HUGGER_HOME=/data"
+                "HUGGER_HOST=0.0.0.0"
+                "HUGGER_PORT=7860"
+                "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+              ];
+              ExposedPorts = { "7860/tcp" = { }; };
+              Volumes = { "/data" = { }; };
+            };
+          };
+        };
 
         # VM integration tests (Linux only — they boot a NixOS guest).
         checks = nixpkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
@@ -33,6 +60,7 @@
             python
             pkgs.uv
             pkgs.git
+            pkgs.skopeo  # for docker-push.sh (copy the image to the registry)
             # build inputs for any sdist-only wheels (argon2-cffi etc.)
             pkgs.gcc
             pkgs.libffi

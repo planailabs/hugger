@@ -32,6 +32,20 @@ nix run            # boot the server (uses uv under the hood)
 nix build          # build the hugger package
 ```
 
+### Docker
+
+A minimal OCI image is built with nix's `dockerTools` (no Dockerfile/daemon):
+
+```bash
+nix build .#docker            # -> result (docker-archive .tar.gz)
+docker load < result          # or: podman load -i result
+docker run -p 7860:7860 -v hugger-data:/data hugger:latest
+```
+
+It runs the server on `0.0.0.0:7860`, stores everything under the `/data` volume
+(`HUGGER_HOME=/data`), and bundles a CA bundle for HuggingFace TLS. CI builds and
+pushes it to the registry via `docker-push.sh` (see `.gitlab-ci.yml`).
+
 ### NixOS module
 
 The flake exports `nixosModules.default`. In your system flake:
