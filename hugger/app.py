@@ -345,13 +345,17 @@ THEME = Style(
       --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
     }
     *{box-sizing:border-box}
+    /* always reserve the scrollbar gutter so short pages don't shift the centered
+       layout horizontally vs tall (scrolling) pages */
+    html{scrollbar-gutter:stable}
     body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
       line-height:1.5;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
     :focus-visible{outline:3px solid #0B5FFF;outline-offset:2px;border-radius:6px}
     ::selection{background:#FFD9A8}
 
-    /* header — orange gradient bar (kept), centered content, active-page underline */
-    header{background:linear-gradient(90deg,var(--accent-2),var(--accent));
+    /* header — original hugger gradient (amber -> deep orange), centered content,
+       active-page underline */
+    header{background:linear-gradient(90deg,#FB8C00,#F4511E);
       position:sticky;top:0;z-index:40;box-shadow:0 2px 0 rgba(120,50,0,.18)}
     header .bar{max-width:1200px;margin:0 auto;height:64px;padding:0 24px;
       display:flex;align-items:center;justify-content:space-between;gap:1rem}
@@ -380,7 +384,7 @@ THEME = Style(
     button,.btn{cursor:pointer;display:inline-flex;align-items:center;justify-content:center;
       gap:7px;height:40px;padding:0 18px;border-radius:8px;border:2px solid var(--accent);
       background:var(--accent);color:#fff;font-family:var(--sans);font-weight:700;font-size:15px;
-      transition:background .12s ease,border-color .12s ease}
+      white-space:nowrap;transition:background .12s ease,border-color .12s ease}
     button:hover,.btn:hover{background:#D9500B;border-color:#D9500B}
     button.ghost,.btn.ghost{background:transparent;border-color:var(--ghost-border);color:var(--accent-ink-2)}
     button.ghost:hover,.btn.ghost:hover{background:#FFF3E0}
@@ -396,6 +400,15 @@ THEME = Style(
     th{text-align:left;padding:12px 14px;font-size:12px;font-weight:800;letter-spacing:.07em;
       text-transform:uppercase;color:var(--th);border-bottom:1px solid var(--line-th)}
     td{padding:16px 14px;border-bottom:1px solid var(--line-soft);vertical-align:middle;font-size:15px}
+    th,td{white-space:nowrap}        /* numbers / pills / commits stay on one line */
+    /* …but long model ids and paths wrap (the model link also caps its column) so
+       the numeric and action columns keep their space */
+    td a.link{display:inline-block;max-width:430px;word-break:break-all;white-space:normal;vertical-align:middle}
+    td.mono,td .mono{word-break:break-all;white-space:normal}
+    /* right-aligned action button group for table rows — stays on one line */
+    .actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:nowrap}
+    .actions button,.actions .btn{height:36px;padding:0 14px;font-size:14px}
+    th.r,td.r{text-align:right}
     .mono{font-family:var(--mono);font-size:.9em}
     .muted{color:var(--muted)}
     .err{color:var(--err-fg);font-weight:700}
@@ -406,7 +419,7 @@ THEME = Style(
 
     /* status pills (with a dot) — JobStatus component palette */
     .badge{display:inline-flex;align-items:center;gap:7px;height:25px;padding:0 10px;
-      border-radius:6px;font-weight:800;font-size:12.5px;background:#EEE4D0;color:#5A4632}
+      border-radius:6px;font-weight:800;font-size:12.5px;white-space:nowrap;background:#EEE4D0;color:#5A4632}
     .badge::before{content:"";width:8px;height:8px;border-radius:999px;background:currentColor}
     .badge.current,.badge.ok{background:var(--ok-bg);color:var(--ok-fg)}
     .badge.update,.badge.warn{background:var(--warn-bg);color:var(--warn-fg)}
@@ -598,14 +611,14 @@ def archives_body():
                                    indicator=_sig("c", rid), cls="ghost")),
                         ds_button("Delete", f"confirm('Delete archive {rid} from disk?') && @post('/ui/delete/{rid}')",
                                   indicator=_sig("d", rid), cls="danger"),
-                        cls="row",
+                        cls="actions",
                     )
                 ),
             )
         )
     body = (
         Table(
-            Thead(Tr(Th("Model"), Th("Store"), Th("Size"), Th("Commit"), Th("Status"), Th("Actions"))),
+            Thead(Tr(Th("Model"), Th("Store"), Th("Size"), Th("Commit"), Th("Status"), Th("Actions", cls="r"))),
             Tbody(*rows),
         )
         if rows
@@ -645,8 +658,9 @@ def summary_fragment():
             Li(
                 A(a["repo_id"], href=f"https://huggingface.co/{a['repo_id']}",
                   target="_blank", cls="link mono"),
-                Span(f" · {human_size(a['size_bytes'])}", cls="muted"),
-                (Span(" · update available", cls="badge update") if a["update_available"] else ""),
+                Span(f" · {human_size(a['size_bytes'])} ", cls="muted"),
+                (status_pill("update available") if a["update_available"] else ""),
+                cls="row",
             )
             for a in archives[:5]
         ]
@@ -1202,10 +1216,10 @@ def stores_body(notice: str | None = None):
             Td(f"{s['n_models']}", cls="muted"),
             Td(free, cls="muted"),
             Td(default_cell),
-            Td(Div(*actions, cls="row")),
+            Td(Div(*actions, cls="actions")),
         ))
     table = Table(
-        Thead(Tr(Th("Name"), Th("Path"), Th("Models"), Th("Free"), Th("Default"), Th(""))),
+        Thead(Tr(Th("Name"), Th("Path"), Th("Models"), Th("Free"), Th("Default"), Th("", cls="r"))),
         Tbody(*rows),
     )
     add = Div(

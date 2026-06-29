@@ -140,10 +140,17 @@
             # build inputs for any sdist-only wheels (argon2-cffi etc.)
             pkgs.gcc
             pkgs.libffi
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            # headless browser for UI/screenshot checks (tests/probe_browser.py)
+            pkgs.chromium
+            pkgs.chromedriver
           ];
           env = {
             UV_PYTHON = "${python}/bin/python";
             UV_PYTHON_DOWNLOADS = "never";
+          } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+            CHROME_BIN = "${pkgs.chromium}/bin/chromium";
+            CHROMEDRIVER = "${pkgs.chromedriver}/bin/chromedriver";
           };
           shellHook = ''
             echo "hugger dev shell — Python ${python.version} + uv $(uv --version | cut -d' ' -f2)"
