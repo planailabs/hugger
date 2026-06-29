@@ -98,6 +98,35 @@ def _job_indicator(job_id: str) -> str:
     return "_b" + re.sub(r"[^0-9a-zA-Z]", "", job_id)
 
 
+# --- reusable Datastar components ----------------------------------------
+
+def live_panel(body, *, wrapper_id: str, stream_url: str):
+    """A panel kept live by a Datastar SSE stream. The wrapper opens the stream
+    on load (fires once and is never patched); the stream morphs `body`, which
+    must carry its own id."""
+    return Div(body, id=wrapper_id, **{"data-on-load": f"@get('{stream_url}')"})
+
+
+def sse_stream(render, *, interval: float = 1.0):
+    """DatastarResponse for a long-lived stream that morphs `render()`'s element
+    whenever its rendered HTML changes — idle pages send nothing, so this replaces
+    htmx polling. `render` returns an FT element with a stable id."""
+    async def gen():
+        last = None
+        while True:
+            html = to_xml(render())
+            if html != last:
+                yield SSE.patch_elements(html)
+                last = html
+            await asyncio.sleep(interval)
+    return DatastarResponse(gen())
+
+
+def patch(*elements):
+    """DatastarResponse that morphs one or more FT elements once (in place)."""
+    return DatastarResponse([SSE.patch_elements(to_xml(e)) for e in elements])
+
+
 # --- interactive UI helpers ----------------------------------------------
 
 def action_button(label: str, *, busy: str | None = None, **kw):
@@ -445,10 +474,8 @@ def jobs_body(notice: str | None = None):
 
 
 def jobs_panel(notice: str | None = None):
-    """Jobs panel wrapper: opens a Datastar SSE stream on load that keeps
-    #jobs-body live (no polling). The wrapper itself is never patched, so the
-    trigger fires exactly once."""
-    return Div(jobs_body(notice), id="jobs", **{"data-on-load": "@get('/ui/jobs')"})
+    """Jobs panel: a live SSE-streamed panel keeping #jobs-body current (no poll)."""
+    return live_panel(jobs_body(notice), wrapper_id="jobs", stream_url="/ui/jobs")
 
 
 def _short(sha: str | None) -> str:
@@ -556,11 +583,8 @@ def summary_fragment():
 
 
 def summary_panel():
-    """Wrapper that opens a Datastar SSE stream on load; the stream morphs the
-    inner #summary-body. The wrapper itself is never patched, so the trigger fires
-    once (no self-retrigger loop)."""
-    return Div(summary_fragment(), id="summary",
-               **{"data-on-load": "@get('/ui/summary')"})
+    """Dashboard recent-activity, kept live by an SSE stream (morphs #summary-body)."""
+    return live_panel(summary_fragment(), wrapper_id="summary", stream_url="/ui/summary")
 
 
 def page(*content, sess=None):
@@ -812,14 +836,14 @@ def ui_move(req, sess, repo_id: str, store_id: str = "", csrf: str = ""):
 async def ui_job_pause(req, sess, job_id: str):
     if await _ds_csrf_ok(req, sess):
         jobs.manager.pause(job_id)
-    return DatastarResponse(SSE.patch_elements(to_xml(jobs_body())))
+    return patch(jobs_body())
 
 
 @rt("/ui/jobs/{job_id}/resume", methods=["POST"])
 async def ui_job_resume(req, sess, job_id: str):
     if await _ds_csrf_ok(req, sess):
         jobs.manager.resume(job_id)
-    return DatastarResponse(SSE.patch_elements(to_xml(jobs_body())))
+    return patch(jobs_body())
 
 
 @rt("/ui/jobs/{job_id}/files", methods=["GET"])
@@ -960,17 +984,7 @@ async def ui_update_apply(req, sess):
 
 @rt("/ui/jobs", methods=["GET"])
 async def ui_jobs():
-    """Long-lived SSE stream keeping #jobs-body live; emits a patch only when the
-    rendered body changes, so idle pages send nothing (no polling)."""
-    async def gen():
-        last = None
-        while True:
-            html = to_xml(jobs_body())
-            if html != last:
-                yield SSE.patch_elements(html)
-                last = html
-            await asyncio.sleep(1)
-    return DatastarResponse(gen())
+    return sse_stream(jobs_body)
 
 
 def job_history_fragment():
@@ -1043,13 +1057,7 @@ def ui_archives():
 
 @rt("/ui/summary", methods=["GET"])
 async def ui_summary():
-    """Long-lived SSE stream that morphs #summary-body every few seconds (replaces
-    htmx polling). Datastar morphs in place, so nothing inside is destroyed."""
-    async def gen():
-        while True:
-            yield SSE.patch_elements(to_xml(summary_fragment()))
-            await asyncio.sleep(5)
-    return DatastarResponse(gen())
+    return sse_stream(summary_fragment, interval=5)
 
 
 @rt("/ui/check/{repo_id:path}", methods=["POST"])
