@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 from pathlib import Path
+from urllib.parse import quote
 
 from datastar_py import ServerSentEventGenerator as SSE
 from datastar_py.fasthtml import DatastarResponse, read_signals
@@ -139,13 +140,17 @@ def action_button(label: str, *, busy: str | None = None, **kw):
     return Button(Span(label, cls="idle"), Span(busy, cls="busy"), **kw)
 
 
+async def _ds(req) -> dict:
+    """All Datastar signals sent with the request (JSON body / `datastar` query)."""
+    return await read_signals(req) or {}
+
+
 def modal(title: str, *content):
-    """Overlay wrapper; swapped into the page-level #modal container."""
+    """Overlay wrapper; rendered into the page-level #modal container."""
     return Div(
         Div(
             Div(H3(title),
-                Button("✕", cls="modal-close", hx_get="/ui/close",
-                       hx_target="#modal", hx_swap="innerHTML"),
+                Button("✕", cls="modal-close", **{"data-on-click": "@get('/ui/close')"}),
                 cls="modal-head"),
             *content,
             cls="modal-card",
@@ -154,24 +159,28 @@ def modal(title: str, *content):
     )
 
 
-def _modal_close_oob():
-    """Out-of-band empty #modal to dismiss the modal after an action."""
-    return Div(id="modal", hx_swap_oob="true")
+def show_modal(overlay):
+    """SSE response that shows a modal (morphs #modal to hold the overlay)."""
+    return patch(Div(overlay, id="modal"))
 
 
-def _modal_oob(*content):
-    """Out-of-band re-render of #modal (e.g. to keep a picker open with an error)."""
-    return Div(*content, id="modal", hx_swap_oob="true")
+def modal_close():
+    """SSE response that dismisses the modal (morphs #modal empty)."""
+    return patch(Div(id="modal"))
 
 
-def file_list(files: list[dict], *, action: str, submit_buttons: list, hidden: dict | None = None,
+def file_list(files: list[dict], *, submit_buttons: list, signals: dict | None = None,
               preselect=None, statuses: dict | None = None, removable_repo: str | None = None,
               disabled=None):
-    """Reusable file picker: checkbox + path + size, optional status + per-file
-    remove. `disabled` paths can't be selected (e.g. files currently downloading).
-    `files` items: {path, size}. Returns a Form posting to `action`."""
+    """Reusable Datastar file picker. Checkboxes bind to a `files` array signal
+    (its initial value = the preselected, non-disabled paths); `submit_buttons`
+    are Datastar actions that read it. `signals` seeds extra picker signals (repo,
+    store, mode…). `disabled` paths can't be selected; `removable_repo` adds a
+    per-file Remove action."""
     preselect = preselect if preselect is not None else {f["path"] for f in files}
     disabled = disabled or set()
+    selected = [f["path"] for f in files if f["path"] in preselect and f["path"] not in disabled]
+    seed = {"files": selected, "mode": "all", **(signals or {})}
     head = [Th(""), Th("File"), Th("Size")]
     if statuses is not None:
         head.append(Th("Status"))
@@ -181,8 +190,8 @@ def file_list(files: list[dict], *, action: str, submit_buttons: list, hidden: d
     for f in files:
         is_disabled = f["path"] in disabled
         cells = [
-            Td(Input(type="checkbox", name="files", value=f["path"],
-                     checked=(f["path"] in preselect and not is_disabled), disabled=is_disabled)),
+            Td(Input(type="checkbox", value=f["path"], disabled=is_disabled,
+                     **{"data-bind": "files"})),
             Td(f["path"], cls="mono"),
             Td(human_size(f["size"]), cls="muted"),
         ]
@@ -191,16 +200,15 @@ def file_list(files: list[dict], *, action: str, submit_buttons: list, hidden: d
             ok = status in ("downloaded", "unchanged")
             cells.append(Td(Span(status, cls="badge current" if ok else "badge update")))
         if removable_repo:
-            rm = (action_button("Remove", cls="danger", hx_post=f"/ui/file-remove/{removable_repo}",
-                                 hx_vals=json.dumps({"path": f["path"]}), hx_target="#managelist", hx_swap="outerHTML")
+            rm = (ds_button("Remove", f"@post('/ui/file-remove/{removable_repo}?path={quote(f['path'])}')",
+                            indicator=_sig("rm", f["path"]), cls="danger")
                   if status == "downloaded" else "")
             cells.append(Td(rm))
         rows.append(Tr(*cells))
-    return Form(
-        *[Input(type="hidden", name=k, value=v) for k, v in (hidden or {}).items()],
+    return Div(
         Div(Table(Thead(Tr(*head)), Tbody(*rows)), cls="filelist"),
         Div(*submit_buttons, cls="row"),
-        hx_post=action, hx_target="#jobs-body", hx_swap="outerHTML",
+        **{"data-signals": json.dumps(seed)},
     )
 
 
@@ -404,14 +412,8 @@ def search_results(models: list[dict], query: str = ""):
                 Td(f"{m['downloads']:,}", cls="muted"),
                 Td(f"♥ {m['likes']}", cls="muted"),
                 Td(
-                    action_button(
-                        "⤓ Archive…", busy="Opening…",
-                        hx_get="/ui/files",
-                        hx_vals=json.dumps({"repo_id": m["id"]}),
-                        hx_include="#target-store",
-                        hx_target="#modal",
-                        hx_swap="innerHTML",
-                    )
+                    ds_button("⤓ Archive…", f"$repo = '{m['id']}'; @get('/ui/files')",
+                              indicator=_sig("a", m["id"]), busy="Opening…"),
                 ),
             )
         )
@@ -440,9 +442,8 @@ def jobs_body(notice: str | None = None):
             controls.append(ds_button("Resume", f"@post('/ui/jobs/{j.id}/resume')",
                                        indicator=ind, cls="ghost"))
             if j.type == "download":  # only paused downloads can re-pick files
-                controls.append(action_button("Edit files", busy="Opening…",
-                                              hx_get=f"/ui/jobs/{j.id}/files",
-                                              hx_target="#modal", hx_swap="innerHTML"))
+                controls.append(ds_button("Edit files", f"@get('/ui/jobs/{j.id}/files')",
+                                          indicator=_sig("e", j.id), busy="Opening…"))
             state = Span(" paused", cls="muted")
         else:
             controls.append(ds_button("Pause", f"@post('/ui/jobs/{j.id}/pause')",
@@ -489,11 +490,10 @@ def _move_control(repo_id: str, current_store_id: str | None, stores: list[dict]
     if not others:
         # Nowhere to move to yet — point the user at adding a store.
         return A("Move…", href="/stores", cls="link muted", title="Add another store to move into")
-    return Form(
-        Select(*[Option(s["name"], value=s["id"]) for s in others], name="store_id"),
-        action_button("Move", cls="ghost"),
-        hx_post=f"/ui/move/{repo_id}", hx_target="#jobs-body", hx_swap="outerHTML",
-        cls="row",
+    return Div(
+        Select(*[Option(s["name"], value=s["id"]) for s in others], **{"data-bind": "movestore"}),
+        ds_button("Move", f"@post('/ui/move/{repo_id}')", indicator=_sig("mv", repo_id), cls="ghost"),
+        cls="row", **{"data-signals": json.dumps({"movestore": others[0]["id"]})},
     )
 
 
@@ -516,8 +516,8 @@ def archives_body():
                 Td(
                     Div(
                         A("Manage", href=f"/manage/{rid}", cls="btn ghost"),
-                        (action_button("Update…", busy="Checking…", hx_get=f"/ui/update/{rid}",
-                                       hx_target="#modal", hx_swap="innerHTML")
+                        (ds_button("Update…", f"@get('/ui/update/{rid}')",
+                                   indicator=_sig("u", rid), busy="Checking…")
                          if a["update_available"] else
                          ds_button("Check", f"@post('/ui/check/{rid}')",
                                    indicator=_sig("c", rid), cls="ghost")),
@@ -619,25 +619,25 @@ def page(*content, sess=None):
 
 @rt("/ui/close", methods=["GET"])
 def ui_close():
-    return Div(id="modal")
+    return modal_close()
 
 
 # --- pages ---------------------------------------------------------------
 
 def store_selector():
-    """Target-store control for new downloads (hidden input if there's only one)."""
+    """Target-store control for new downloads, bound to the `store` signal."""
     stores = store.list_stores()
     if len(stores) <= 1:
         sid = stores[0]["id"] if stores else ""
-        return Input(type="hidden", id="target-store", name="store_id", value=sid)
+        return Div(**{"data-signals": json.dumps({"store": sid})})
     default = next((s for s in stores if s["is_default"]), stores[0])
     return Div(
         Span("Target store: ", cls="muted"),
         Select(
-            *[Option(s["name"], value=s["id"], selected=(s["id"] == default["id"])) for s in stores],
-            id="target-store", name="store_id",
+            *[Option(s["name"], value=s["id"]) for s in stores],
+            **{"data-bind": "store"},
         ),
-        cls="row",
+        cls="row", **{"data-signals": json.dumps({"store": default["id"]})},
     )
 
 
@@ -645,17 +645,16 @@ def store_selector():
 def index(sess):
     search = Div(
         H2("Find a model"),
-        Form(
-            Input(type="text", name="q", placeholder="e.g. llama, bert, whisper…"),
-            action_button("Search", busy="Searching…"),
-            hx_post="/ui/search", hx_include="#target-store", hx_target="#modal", hx_swap="innerHTML",
+        Div(
+            Input(type="text", placeholder="e.g. llama, bert, whisper…", **{"data-bind": "q"}),
+            ds_button("Search", "@post('/ui/search')", indicator="_search", busy="Searching…"),
+            cls="row",
         ),
         cls="card",
     )
-    manual = Form(
-        Input(type="text", name="repo_id", placeholder="org/model — archive by id"),
-        action_button("⤓ Archive…", busy="Opening…"),
-        hx_get="/ui/files", hx_include="#target-store", hx_target="#modal", hx_swap="innerHTML",
+    manual = Div(
+        Input(type="text", placeholder="org/model — archive by id", **{"data-bind": "repo"}),
+        ds_button("⤓ Archive…", "@get('/ui/files')", indicator="_arch", busy="Opening…"),
         cls="row",
     )
     downloads = Div(
@@ -772,10 +771,12 @@ def _guard_csrf(req, sess, csrf):
 
 
 @rt("/ui/search", methods=["POST"])
-def ui_search(req, sess, q: str = "", csrf: str = ""):
-    if not _guard_csrf(req, sess, csrf):
-        return modal("Search", P("Session expired, reload the page.", cls="err"))
-    return search_results(search_models(q), query=q)
+async def ui_search(req, sess):
+    s = await _ds(req)
+    if not auth.csrf_ok(sess, s.get("csrf")):
+        return show_modal(modal("Search", P("Session expired, reload the page.", cls="err")))
+    q = (s.get("q") or "").strip()
+    return show_modal(search_results(search_models(q), query=q))
 
 
 def _archive_modal(repo_id: str, store_id: str, notice: str | None = None):
@@ -789,53 +790,57 @@ def _archive_modal(repo_id: str, store_id: str, notice: str | None = None):
     head = [P(notice, cls="err")] if notice else []
     head.append(P(f"Total {human_size(total)} · {len(info['files'])} files", cls="muted"))
     form = file_list(
-        info["files"], action="/ui/archive",
-        hidden={"repo_id": repo_id, "store_id": store_id or ""}, statuses=statuses, disabled=locked,
+        info["files"], statuses=statuses, disabled=locked,
+        signals={"repo": repo_id, "store": store_id or ""},
         submit_buttons=[
-            action_button("⤓ Download all", name="mode", value="all"),
-            action_button("⤓ Download selected", name="mode", value="selected", cls="ghost"),
+            ds_button("⤓ Download all", "$mode='all'; @post('/ui/archive')", indicator="_dlall"),
+            ds_button("⤓ Download selected", "$mode='selected'; @post('/ui/archive')",
+                      indicator="_dlsel", cls="ghost"),
         ],
     )
     return modal(f"Archive {repo_id}", *head, form)
 
 
 @rt("/ui/files", methods=["GET"])
-def ui_files(req, sess, repo_id: str = "", store_id: str = ""):
-    repo_id = repo_id.strip()
+async def ui_files(req, sess):
+    s = await _ds(req)
+    repo_id = (s.get("repo") or "").strip()
     if not repo_id:
-        return Div(id="modal")
-    return _archive_modal(repo_id, store_id)
+        return modal_close()
+    return show_modal(_archive_modal(repo_id, (s.get("store") or "").strip()))
 
 
 @rt("/ui/archive", methods=["POST"])
 async def ui_archive(req, sess):
-    form = await req.form()
-    if not auth.csrf_ok(sess, _csrf_value(req, form.get("csrf"))):
-        return Div(P("Session expired, reload the page.", cls="err"), id="jobs")
-    repo_id = (form.get("repo_id") or "").strip()
-    store_id = (form.get("store_id") or "").strip() or None
-    selected = None if (form.get("mode") or "all") == "all" else form.getlist("files")
+    s = await _ds(req)
+    if not auth.csrf_ok(sess, s.get("csrf")):
+        return show_modal(modal("Archive", P("Session expired, reload the page.", cls="err")))
+    repo_id = (s.get("repo") or "").strip()
+    store_id = (s.get("store") or "").strip()
+    selected = None if (s.get("mode") or "all") == "all" else list(s.get("files") or [])
     if repo_id:
         try:
-            jobs.manager.start_download(repo_id, store_id=store_id, selected=selected)
+            jobs.manager.start_download(repo_id, store_id=store_id or None, selected=selected)
         except (jobs.InsufficientSpace, jobs.Busy) as e:
-            # Keep the picker open and show the error there, not in the jobs card.
-            return jobs_body(), _modal_oob(_archive_modal(repo_id, store_id, notice=f"⚠️ {e}"))
+            # Keep the picker open and show the error there.
+            return show_modal(_archive_modal(repo_id, store_id, notice=f"⚠️ {e}"))
         except Exception as e:
-            return jobs_body(), _modal_oob(_archive_modal(repo_id, store_id, notice=f"⚠️ {type(e).__name__}: {e}"))
-    return jobs_body(), _modal_close_oob()
+            return show_modal(_archive_modal(repo_id, store_id, notice=f"⚠️ {type(e).__name__}: {e}"))
+    return modal_close()
 
 
 @rt("/ui/move/{repo_id:path}", methods=["POST"])
-def ui_move(req, sess, repo_id: str, store_id: str = "", csrf: str = ""):
-    if _guard_csrf(req, sess, csrf) and store_id:
+async def ui_move(req, sess, repo_id: str):
+    s = await _ds(req)
+    notice = None
+    if auth.csrf_ok(sess, s.get("csrf")) and s.get("movestore"):
         try:
-            jobs.manager.start_move(repo_id, store_id)
+            jobs.manager.start_move(repo_id, s["movestore"])
         except (jobs.InsufficientSpace, jobs.Busy) as e:
-            return jobs_body(notice=f"⚠️ {e}")
+            notice = f"⚠️ {e}"
         except KeyError:
             pass
-    return jobs_body()
+    return patch(jobs_body(notice))
 
 
 @rt("/ui/jobs/{job_id}/pause", methods=["POST"])
@@ -856,27 +861,28 @@ async def ui_job_resume(req, sess, job_id: str):
 def ui_job_files(req, sess, job_id: str):
     job = jobs.manager.get(job_id)
     if not job or job.type != "download":
-        return Div(id="modal")
+        return modal_close()
     try:
         info = hub.repo_files(job.repo_id, job.revision)
     except Exception as e:
-        return modal("Edit files", P(f"Could not list files: {e}", cls="err"))
+        return show_modal(modal("Edit files", P(f"Could not list files: {e}", cls="err")))
     st = store.get_store(job.store_id)
     meta = metadata.read(jobs.store_repo_path(st["path"], job.repo_id)) if st else None
     selected = set(meta["selected"]) if meta else {f["path"] for f in info["files"]}
     form = file_list(
-        info["files"], action=f"/ui/jobs/{job_id}/files", preselect=selected,
-        submit_buttons=[action_button("Save selection")],
+        info["files"], preselect=selected,
+        submit_buttons=[ds_button("Save selection", f"@post('/ui/jobs/{job_id}/files')",
+                                  indicator="_savesel")],
     )
-    return modal(f"Files for paused download · {job.repo_id}", form)
+    return show_modal(modal(f"Files for paused download · {job.repo_id}", form))
 
 
 @rt("/ui/jobs/{job_id}/files", methods=["POST"])
-async def ui_job_files_save(req, sess):
-    form = await req.form()
-    if auth.csrf_ok(sess, _csrf_value(req, form.get("csrf"))):
-        jobs.manager.update_selected(req.path_params["job_id"], form.getlist("files"))
-    return jobs_body(), _modal_close_oob()
+async def ui_job_files_save(req, sess, job_id: str):
+    s = await _ds(req)
+    if auth.csrf_ok(sess, s.get("csrf")):
+        jobs.manager.update_selected(job_id, list(s.get("files") or []))
+    return modal_close()
 
 
 def manage_list_fragment(repo_id: str):
@@ -891,9 +897,10 @@ def manage_list_fragment(repo_id: str):
     statuses, locked = file_statuses(repo_id, info["files"])
     preselect = {p for p, s in statuses.items() if s == "missing"}  # default: fetch missing
     form = file_list(
-        info["files"], action=f"/ui/manage/{repo_id}", statuses=statuses,
+        info["files"], statuses=statuses,
         preselect=preselect, removable_repo=repo_id, disabled=locked,
-        submit_buttons=[action_button("⤓ Download selected")],
+        submit_buttons=[ds_button("⤓ Download selected", f"@post('/ui/manage/{repo_id}')",
+                                  indicator="_mgdl")],
     )
     return Div(form, id="managelist")
 
@@ -922,29 +929,27 @@ def manage_page(req, sess, repo_id: str):
 
 
 @rt("/ui/manage/{repo_id:path}", methods=["POST"])
-async def ui_manage_download(req, sess):
-    form = await req.form()
-    repo_id = req.path_params["repo_id"]
-    if auth.csrf_ok(sess, _csrf_value(req, form.get("csrf"))):
-        files = form.getlist("files")
+async def ui_manage_download(req, sess, repo_id: str):
+    s = await _ds(req)
+    if auth.csrf_ok(sess, s.get("csrf")):
+        files = list(s.get("files") or [])
         rec = store.get_archive(repo_id)
         if files and rec:
             try:
                 jobs.manager.start_download(repo_id, rec["revision"], store_id=rec["store_id"], selected=files)
-            except (jobs.InsufficientSpace, jobs.Busy) as e:
-                return jobs_body(notice=f"⚠️ {e}")
-    return jobs_body()
+            except (jobs.InsufficientSpace, jobs.Busy):
+                pass  # the jobs stream surfaces failures; managelist just refreshes
+    return patch(manage_list_fragment(repo_id))
 
 
 @rt("/ui/file-remove/{repo_id:path}", methods=["POST"])
-async def ui_file_remove(req, sess):
-    form = await req.form()
-    repo_id = req.path_params["repo_id"]
-    if auth.csrf_ok(sess, _csrf_value(req, form.get("csrf"))):
-        path = form.get("path")
+async def ui_file_remove(req, sess, repo_id: str):
+    s = await _ds(req)
+    if auth.csrf_ok(sess, s.get("csrf")):
+        path = req.query_params.get("path")
         if path:
             jobs.manager.remove_file(repo_id, path)
-    return manage_list_fragment(repo_id)
+    return patch(manage_list_fragment(repo_id))
 
 
 def _update_modal(repo_id: str, notice: str | None = None):
@@ -956,11 +961,13 @@ def _update_modal(repo_id: str, notice: str | None = None):
         return modal("Update", P(f"Verify failed: {e}", cls="err"))
     changed = set(v["changed"]) | set(v["missing"])
     statuses = {f["path"]: f["status"] for f in v["files"]}
-    buttons = [action_button(f"⟳ Update changed ({len(changed)})", name="mode", value="selected")]
+    buttons = [ds_button(f"⟳ Update changed ({len(changed)})",
+                         f"$mode='selected'; @post('/ui/update/{repo_id}')", indicator="_upd")]
     if v["all_present"]:
-        buttons.append(action_button("⟳ Re-download all", name="mode", value="all", cls="ghost"))
+        buttons.append(ds_button("⟳ Re-download all", f"$mode='all'; @post('/ui/update/{repo_id}')",
+                                 indicator="_updall", cls="ghost"))
     form = file_list(
-        v["files"], action=f"/ui/update/{repo_id}", hidden={"repo_id": repo_id},
+        v["files"], signals={"repo": repo_id},
         statuses=statuses, preselect=changed, submit_buttons=buttons,
     )
     head = [P(notice, cls="err")] if notice else []
@@ -970,22 +977,21 @@ def _update_modal(repo_id: str, notice: str | None = None):
 
 @rt("/ui/update/{repo_id:path}", methods=["GET"])
 def ui_update(req, sess, repo_id: str):
-    return _update_modal(repo_id)
+    return show_modal(_update_modal(repo_id))
 
 
 @rt("/ui/update/{repo_id:path}", methods=["POST"])
-async def ui_update_apply(req, sess):
-    form = await req.form()
-    repo_id = req.path_params["repo_id"]
-    if auth.csrf_ok(sess, _csrf_value(req, form.get("csrf"))):
+async def ui_update_apply(req, sess, repo_id: str):
+    s = await _ds(req)
+    if auth.csrf_ok(sess, s.get("csrf")):
         rec = store.get_archive(repo_id)
         if rec:
-            selected = None if (form.get("mode") or "selected") == "all" else form.getlist("files")
+            selected = None if (s.get("mode") or "selected") == "all" else list(s.get("files") or [])
             try:
                 jobs.manager.start_download(repo_id, rec["revision"], store_id=rec["store_id"], selected=selected)
             except (jobs.InsufficientSpace, jobs.Busy) as e:
-                return jobs_body(), _modal_oob(_update_modal(repo_id, notice=f"⚠️ {e}"))
-    return jobs_body(), _modal_close_oob()
+                return show_modal(_update_modal(repo_id, notice=f"⚠️ {e}"))
+    return modal_close()
 
 
 @rt("/ui/jobs", methods=["GET"])

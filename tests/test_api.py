@@ -44,12 +44,22 @@ def _login(cli):
     assert r.headers["location"] == "/"
 
 
-def _ds_post(cli, url, csrf=None):
-    """Simulate a Datastar @post: the runtime sends a Datastar-Request header and
-    the signals as a JSON body."""
-    headers = {"Datastar-Request": "true"}
-    body = {"csrf": csrf} if csrf is not None else {}
-    return cli.post(url, json=body, headers=headers)
+def _ds_post(cli, url, csrf=None, **signals):
+    """Simulate a Datastar @post: Datastar-Request header + signals as JSON body."""
+    body = dict(signals)
+    if csrf is not None:
+        body["csrf"] = csrf
+    return cli.post(url, json=body, headers={"Datastar-Request": "true"})
+
+
+def _ds_get(cli, url, csrf=None, **signals):
+    """Simulate a Datastar @get: signals in the `datastar` query param."""
+    import json as _json
+    body = dict(signals)
+    if csrf is not None:
+        body["csrf"] = csrf
+    return cli.get(url, params={"datastar": _json.dumps(body)},
+                   headers={"Datastar-Request": "true"})
 
 
 def _csrf(cli):
@@ -163,9 +173,8 @@ def test_archive_space_error_shows_in_modal():
 
     jobs.manager.start_download = boom
     try:
-        r = cli.post("/ui/archive", data={"repo_id": "org/x", "mode": "all"},
-                     headers={"X-CSRF-Token": _csrf(cli)}).text
-        assert "hx-swap-oob" in r and "need 805 GB" in r and "modal-overlay" in r
+        r = _ds_post(cli, "/ui/archive", csrf=_csrf(cli), repo="org/x", mode="all").text
+        assert "datastar-patch-elements" in r and "need 805 GB" in r and "modal-overlay" in r
     finally:
         jobs.manager.start_download = orig
         hub.repo_files = of
@@ -178,7 +187,7 @@ def test_search_returns_modal():
     of = appmod.search_models
     appmod.search_models = lambda q, limit=25: [{"id": "o/m", "downloads": 1, "likes": 0, "last_modified": ""}]
     try:
-        r = cli.post("/ui/search", data={"q": "x"}, headers={"X-CSRF-Token": _csrf(cli)}).text
+        r = _ds_post(cli, "/ui/search", csrf=_csrf(cli), q="x").text
         assert "modal-overlay" in r and "o/m" in r and "Archive" in r
     finally:
         appmod.search_models = of
@@ -191,9 +200,9 @@ def test_ui_move_starts_job():
     orig = jobs.manager.start_move
     jobs.manager.start_move = lambda repo_id, dest: called.update(repo=repo_id, dest=dest) or _FakeJob(repo_id)
     try:
-        cli.post("/ui/move/org/mv", data={"store_id": "s2"})  # no csrf -> ignored
+        _ds_post(cli, "/ui/move/org/mv", movestore="s2")  # no csrf -> ignored
         assert not called
-        cli.post("/ui/move/org/mv", data={"store_id": "s2"}, headers={"X-CSRF-Token": _csrf(cli)})
+        _ds_post(cli, "/ui/move/org/mv", csrf=_csrf(cli), movestore="s2")
         assert called == {"repo": "org/mv", "dest": "s2"}
     finally:
         jobs.manager.start_move = orig
@@ -291,9 +300,9 @@ def test_archive_ui_requires_csrf():
     orig = jobs.manager.start_download
     jobs.manager.start_download = lambda repo_id, revision="main", store_id=None, selected=None: started.__setitem__("n", started["n"] + 1) or _FakeJob(repo_id)
     try:
-        cli.post("/ui/archive", data={"repo_id": "org/x"})  # no csrf
+        _ds_post(cli, "/ui/archive", repo="org/x")  # no csrf
         assert started["n"] == 0
-        cli.post("/ui/archive", data={"repo_id": "org/x"}, headers={"X-CSRF-Token": _csrf(cli)})
+        _ds_post(cli, "/ui/archive", csrf=_csrf(cli), repo="org/x")
         assert started["n"] == 1
     finally:
         jobs.manager.start_download = orig
