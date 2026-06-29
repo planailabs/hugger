@@ -212,6 +212,12 @@
           '');
         };
       }) // {
-      nixosModules.default = import ./nixos/module.nix;
+      # Wire the module's package to the uv2nix build for the host's system, so
+      # NixOS deployments get the same hf 1.21 / hf-xet 1.5.1 (resumable Xet) as
+      # the docker image. mkDefault so users can still override.
+      nixosModules.default = { pkgs, lib, ... }: {
+        imports = [ ./nixos/module.nix ];
+        services.hugger.package = lib.mkDefault self.packages.${pkgs.system}.default;
+      };
     };
 }

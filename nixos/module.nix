@@ -9,9 +9,11 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.python3Packages.callPackage ./package.nix { };
-      defaultText = lib.literalExpression "pkgs.python3Packages.callPackage ./package.nix { }";
-      description = "The hugger package to run.";
+      description = ''
+        The hugger package to run. The flake's `nixosModules.default` sets this
+        to the uv2nix-built package (`self.packages.<system>.default`); set it
+        explicitly when importing this module without the flake wrapper.
+      '';
     };
 
     host = lib.mkOption {
