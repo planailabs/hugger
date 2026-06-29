@@ -357,7 +357,34 @@ def test_security_headers_present():
     assert h["x-content-type-options"] == "nosniff"
     assert h["x-frame-options"] == "DENY"
     assert "content-security-policy" in h
+    # Datastar's expression evaluator needs unsafe-eval in script-src.
+    assert "'unsafe-eval'" in h["content-security-policy"]
     assert h["referrer-policy"] == "no-referrer"
+
+
+def test_datastar_runtime_self_hosted():
+    cli = _setup_client()
+    _login(cli)
+    # the runtime is referenced and actually served from /static (no CDN)
+    assert "/static/datastar.js" in cli.get("/").text
+    r = cli.get("/static/datastar.js")
+    assert r.status_code == 200
+    assert "Datastar" in r.text
+
+
+def test_summary_sse_stream():
+    """The dashboard summary is a Datastar SSE stream patching #summary-body."""
+    import asyncio
+    from fasthtml.common import to_xml
+    assert 'data-on-load="@get(' in to_xml(appmod.summary_panel())
+
+    async def first_frame():
+        resp = await appmod.ui_summary()
+        chunk = await resp.body_iterator.__anext__()
+        return chunk if isinstance(chunk, str) else chunk.decode()
+    ev = asyncio.run(first_frame())
+    assert "datastar-patch-elements" in ev
+    assert "summary-body" in ev
 
 
 if __name__ == "__main__":

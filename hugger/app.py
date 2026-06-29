@@ -6,16 +6,24 @@ for the browser extension, security headers + TrustedHost, optional HSTS/CORS.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import secrets
+from pathlib import Path
 
+from datastar_py import ServerSentEventGenerator as SSE
+from datastar_py.fasthtml import DatastarResponse, read_signals
 from fasthtml.common import *  # noqa: F403  (FT tags, fast_app, serve, Beforeware, RedirectResponse)
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import JSONResponse
+from starlette.routing import Mount
+from starlette.staticfiles import StaticFiles
+
+_STATIC_DIR = Path(__file__).parent / "static"
 
 from . import auth, hub, jobs, metadata, store, util
 from .config import ARCHIVE_DIR, cfg
@@ -167,9 +175,12 @@ class SecurityHeaders(BaseHTTPMiddleware):
         resp.headers["Referrer-Policy"] = "no-referrer"
         # ponytail: moderate CSP — allows inline (htmx attrs) + the CDN FastHTML
         # loads htmx from. Tighten to 'self' if you self-host htmx.
+        # Datastar evaluates data-* expressions via the Function constructor, so
+        # script-src needs 'unsafe-eval'. The runtime is self-hosted from /static,
+        # so no CDN hosts are needed. SSE actions use same-origin fetch (connect-src).
         resp.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
             "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
         )
         if cfg.https_only:
@@ -300,15 +311,23 @@ BUSY_FEEDBACK = Script(
     "});"
 )
 
+# Datastar runtime, self-hosted from /static (vendored hugger/static/datastar.js).
+DATASTAR = Script(type="module", src="/static/datastar.js")
+
 app, rt = fast_app(
     secret_key=cfg.secret_key,
     before=beforeware,
     middleware=_middleware(),
     pico=False,
-    hdrs=(THEME, BUSY_FEEDBACK),
+    hdrs=(THEME, BUSY_FEEDBACK, DATASTAR),
     # On graceful shutdown, mark in-flight jobs queued (not failed) so they resume.
     on_shutdown=[jobs.manager.shutdown],
 )
+
+# Serve the vendored runtime from the package's static dir. Insert ahead of
+# FastHTML's built-in catch-all static route (which serves from cwd) so /static
+# resolves here regardless of the working directory.
+app.routes.insert(0, Mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"))
 
 
 # --- shared fragments ----------------------------------------------------
@@ -506,8 +525,16 @@ def summary_fragment():
         stats,
         recent_list,
         A("View all archives →", href="/archives", cls="link"),
-        id="summary", hx_get="/ui/summary", hx_trigger="every 5s", hx_swap="outerHTML",
+        id="summary-body",
     )
+
+
+def summary_panel():
+    """Wrapper that opens a Datastar SSE stream on load; the stream morphs the
+    inner #summary-body. The wrapper itself is never patched, so the trigger fires
+    once (no self-retrigger loop)."""
+    return Div(summary_fragment(), id="summary",
+               **{"data-on-load": "@get('/ui/summary')"})
 
 
 def page(*content, sess=None):
@@ -583,7 +610,7 @@ def index(sess):
             " for faster downloads and to avoid rate limits.",
             cls="notice",
         ))
-    blocks += [search, downloads, Div(summary_fragment(), cls="card")]
+    blocks += [search, downloads, Div(summary_panel(), cls="card")]
     return page(*blocks, sess=sess)
 
 
@@ -976,8 +1003,14 @@ def ui_archives():
 
 
 @rt("/ui/summary", methods=["GET"])
-def ui_summary():
-    return summary_fragment()
+async def ui_summary():
+    """Long-lived SSE stream that morphs #summary-body every few seconds (replaces
+    htmx polling). Datastar morphs in place, so nothing inside is destroyed."""
+    async def gen():
+        while True:
+            yield SSE.patch_elements(to_xml(summary_fragment()))
+            await asyncio.sleep(5)
+    return DatastarResponse(gen())
 
 
 @rt("/ui/check/{repo_id:path}", methods=["POST"])
