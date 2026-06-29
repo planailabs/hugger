@@ -4,9 +4,13 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    gitlab-incus-image.url = "git+https://git.mkg20001.io/mkg20001/gitlab-incus-image.git";
+    gitlab-incus-image.inputs.nixpkgs.follows = "nixpkgs";
+    xzar.url = "github:mkg20001/xzar";
+    xzar.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, gitlab-incus-image, xzar }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -45,6 +49,39 @@
               Volumes = { "/data" = { }; };
             };
           };
+
+          # NixOS-in-Incus image for gitlab CI runners (mirrors plan-ai/memvault).
+          image = (nixpkgs.lib.nixosSystem {
+            system = "x86_64-linux";
+            modules = [
+              "${nixpkgs}/nixos/modules/virtualisation/lxc-container.nix"
+              gitlab-incus-image.nixosModules.gitlab-incus-image
+              ({ pkgs, ... }: {
+                environment.systemPackages = with pkgs; [
+                  openssh
+                  rsync
+                  pkgs.xzar-client
+                  pixz
+                ];
+
+                nixpkgs.overlays = [
+                  xzar.overlays.default
+                ];
+
+                programs.git.config.advice.detachedHead = false;
+                system.stateVersion = "26.11";
+
+                nix.settings = {
+                  substituters = [
+                    "https://xzar.plan.ai"
+                  ];
+                  trusted-public-keys = [
+                    "xzar.plan.ai:KUE66pjr6UX5HHCn9kedN1DJ2J5nSlBrKmE7tUjXewE="
+                  ];
+                };
+              })
+            ];
+          }).config.system.build.gitlab-incus-image;
         };
 
         # VM integration tests (Linux only — they boot a NixOS guest).
