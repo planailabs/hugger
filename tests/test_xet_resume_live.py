@@ -140,25 +140,42 @@ def test_non_xet_returns_false():
         assert not (Path(d) / PLAIN_FILE).exists()  # caller handles non-Xet files
 
 
-def test_download_all_shared_group():
-    """Several Xet files stream through one group; non-Xet files are returned for
-    the classic path, not fetched here. One file is pre-seeded to prove resume
-    works through the batched path too."""
+XET_FILES = ["model.safetensors", "pytorch_model.bin", "tf_model.h5"]  # all Xet-backed
+
+
+def _check_download_all(d, names):
+    refs = {n: Path(__import__("huggingface_hub").hf_hub_download(REPO, filename=n)) for n in names}
+    # seed the first file with its real first half — must resume, not restart
+    first = names[0]
+    (Path(d) / (first + xd.PART_SUFFIX)).write_bytes(
+        refs[first].read_bytes()[: refs[first].stat().st_size // 2])
+    classic = xd.download_all(REPO, "main", names + [PLAIN_FILE], d, token=None)
+    assert classic == [PLAIN_FILE], classic
+    assert not (Path(d) / PLAIN_FILE).exists()  # non-Xet not handled here
+    for n in names:
+        assert _sha(Path(d) / n) == _sha(refs[n]), n
+
+
+def test_download_all_concurrent():
+    """Several Xet files stream concurrently through one group; non-Xet files are
+    returned for the classic path; a pre-seeded file proves resume on this path."""
     if not ONLINE:
-        return _skip("test_download_all_shared_group")
-    from huggingface_hub import hf_hub_download
-    xet_a, xet_b = "model.safetensors", XET_FILE  # two distinct Xet files
-    ref_a = Path(hf_hub_download(REPO, filename=xet_a))
-    ref_b = _reference()
+        return _skip("test_download_all_concurrent")
     with tempfile.TemporaryDirectory() as d:
-        # seed file B with the real first half — must resume, not restart
-        part_b = Path(d) / (xet_b + xd.PART_SUFFIX)
-        part_b.write_bytes(ref_b.read_bytes()[: ref_b.stat().st_size // 2])
-        classic = xd.download_all(REPO, "main", [xet_a, xet_b, PLAIN_FILE], d, token=None)
-        assert classic == [PLAIN_FILE], classic
-        assert not (Path(d) / PLAIN_FILE).exists()  # non-Xet not handled here
-        assert _sha(Path(d) / xet_a) == _sha(ref_a)
-        assert _sha(Path(d) / xet_b) == _sha(ref_b)
+        _check_download_all(d, XET_FILES)  # 3 files, default concurrency (parallel)
+
+
+def test_download_all_sequential():
+    """HUGGER_XET_CONCURRENCY=1 forces the sequential path — same result."""
+    if not ONLINE:
+        return _skip("test_download_all_sequential")
+    os.environ["HUGGER_XET_CONCURRENCY"] = "1"
+    try:
+        assert xd._concurrency() == 1
+        with tempfile.TemporaryDirectory() as d:
+            _check_download_all(d, XET_FILES[:2])
+    finally:
+        os.environ.pop("HUGGER_XET_CONCURRENCY", None)
 
 
 if __name__ == "__main__":

@@ -14,12 +14,22 @@ which resumes LFS files but not Xet).
 """
 from __future__ import annotations
 
+import concurrent.futures
 import os
 from pathlib import Path
 
 PART_SUFFIX = ".xetpart"
 
 _available: bool | None = None
+
+
+def _concurrency() -> int:
+    """How many files to stream through the group at once (HUGGER_XET_CONCURRENCY,
+    default 8). The shared chunk cache still dedups across the concurrent files."""
+    try:
+        return max(1, int(os.environ.get("HUGGER_XET_CONCURRENCY", "8")))
+    except ValueError:
+        return 8
 
 
 def available() -> bool:
@@ -105,8 +115,23 @@ def download_all(repo_id: str, revision: str, rels: list[str], dest_dir: str | P
 
     if xet_items:
         group = _new_group(refresh_route, headers)
-        for rel, file_hash, size in xet_items:
-            _stream_one(group, rel, file_hash, size, dest_dir)
+        workers = min(_concurrency(), len(xet_items))
+        if workers <= 1:
+            for rel, file_hash, size in xet_items:
+                _stream_one(group, rel, file_hash, size, dest_dir)
+        else:
+            # Stream files concurrently through the one group; download_stream
+            # releases the GIL for the network/CAS work, so this overlaps real
+            # transfer. A failed file leaves its `.xetpart` for the next attempt;
+            # we let the others finish, then surface the first error.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+                futs = {ex.submit(_stream_one, group, rel, file_hash, size, dest_dir): rel
+                        for rel, file_hash, size in xet_items}
+                errors = [(futs[f], f.exception())
+                          for f in concurrent.futures.as_completed(futs) if f.exception()]
+            if errors:
+                rel, err = errors[0]
+                raise RuntimeError(f"xet download failed for {rel}: {err}") from err
     return classic
 
 
