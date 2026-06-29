@@ -292,18 +292,32 @@ def recent_jobs(limit: int = 200) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+_FINISHED = ("done", "error", "retried")
+
+
+def mark_retried(old_job_id: str, new_job_id: str) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE jobs SET status='retried', retried_by=?, updated_at=? WHERE id=?",
+            (new_job_id, _now(), old_job_id),
+        )
+
+
 def prune_jobs(max_age_days: int = 30) -> int:
-    """Delete finished (done/error) jobs older than max_age_days. Returns count."""
+    """Delete finished (done/error/retried) jobs older than max_age_days."""
     from datetime import timedelta
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
+    placeholders = ",".join("?" * len(_FINISHED))
     with closing(_connect()) as conn, conn:
         cur = conn.execute(
-            "DELETE FROM jobs WHERE status IN ('done','error') AND updated_at < ?", (cutoff,)
+            f"DELETE FROM jobs WHERE status IN ({placeholders}) AND updated_at < ?",
+            (*_FINISHED, cutoff),
         )
         return cur.rowcount
 
 
 def delete_finished_jobs() -> int:
+    placeholders = ",".join("?" * len(_FINISHED))
     with closing(_connect()) as conn, conn:
-        cur = conn.execute("DELETE FROM jobs WHERE status IN ('done','error')")
+        cur = conn.execute(f"DELETE FROM jobs WHERE status IN ({placeholders})", _FINISHED)
         return cur.rowcount

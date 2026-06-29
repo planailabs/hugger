@@ -260,9 +260,13 @@ def test_retry_error_job():
     try:
         jobs.manager.retry("e1")  # row only in the DB
         assert started == {"repo": repo, "store": a, "sel": ["a"]}
+        # the old errored row is marked retried, pointing at the new job id
+        row = next(r for r in store.recent_jobs() if r["id"] == "e1")
+        assert row["status"] == "retried" and row["retried_by"] == "new"
     finally:
         jobs.manager.start_download = osd
         store.delete_archive_and_hashes(repo)
+        store.delete_finished_jobs()
 
 
 def test_util_writable_and_free():

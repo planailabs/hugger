@@ -873,6 +873,8 @@ def job_history_fragment():
     for j in store.recent_jobs():
         badge = Span(j["status"], cls="badge update" if j["status"] == "error" else "badge current")
         detail = j["error"] or ""
+        if j["status"] == "retried" and j.get("retried_by"):
+            detail = f"→ retried as {j['retried_by']}"
         retry = (action_button("Retry", busy="Restarting…", cls="ghost",
                                hx_post=f"/ui/jobs/{j['id']}/retry", hx_target="#jobhistory", hx_swap="outerHTML")
                  if j["status"] == "error" else "")

@@ -216,14 +216,20 @@ class JobManager:
                 return None
             repo, store_id, typ, revision = row["repo_id"], row["store_id"], row["type"], row["revision"] or "main"
         if typ == "move":
-            return self.start_move(repo, store_id)
-        selected = None  # re-pick the originally selected files if metadata survives
-        st = store.get_store(store_id)
-        if st:
-            meta = metadata.read(store_repo_path(st["path"], repo))
-            if meta:
-                selected = meta.get("selected")
-        return self.start_download(repo, revision, store_id=store_id, selected=selected)
+            new = self.start_move(repo, store_id)
+        else:
+            selected = None  # re-pick the originally selected files if metadata survives
+            st = store.get_store(store_id)
+            if st:
+                meta = metadata.read(store_repo_path(st["path"], repo))
+                if meta:
+                    selected = meta.get("selected")
+            new = self.start_download(repo, revision, store_id=store_id, selected=selected)
+        # Mark the old errored job as retried, pointing at the new job.
+        store.mark_retried(job_id, new.id)
+        if job is not None:
+            job.status = "retried"
+        return new
 
     def clear_finished(self) -> None:
         with self._lock:
