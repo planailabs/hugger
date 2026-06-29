@@ -97,6 +97,20 @@ def _sig(prefix: str, key: str) -> str:
     return "_" + prefix + re.sub(r"[^0-9a-zA-Z]", "", key)
 
 
+# status -> pill colour class (JobStatus design component palette)
+_PILL = {
+    "current": "ok", "done": "ok", "unchanged": "ok", "downloaded": "ok",
+    "update": "warn", "update available": "warn", "paused": "warn", "queued": "warn",
+    "missing": "err", "error": "err", "changed": "err",
+    "running": "info", "downloading": "info",
+}
+
+
+def status_pill(label: str):
+    """A coloured status pill (with a dot) for a job/file status string."""
+    return Span(label, cls=f"badge {_PILL.get(label.lower(), '')}".rstrip())
+
+
 # --- reusable Datastar components ----------------------------------------
 
 def live_panel(body, *, wrapper_id: str, stream_url: str):
@@ -203,8 +217,7 @@ def file_list(files: list[dict], *, submit_buttons: list, signals: dict | None =
         ]
         status = statuses.get(f["path"]) if statuses is not None else None
         if statuses is not None:
-            ok = status in ("downloaded", "unchanged")
-            cells.append(Td(Span(status, cls="badge current" if ok else "badge update")))
+            cells.append(Td(status_pill(status)))
         if removable_repo:
             rm = (ds_button("Remove", f"@post('/ui/file-remove/{removable_repo}?path={quote(f['path'])}')",
                             indicator=_sig("rm", f["path"]), cls="danger")
@@ -316,70 +329,119 @@ beforeware = Beforeware(
 
 THEME = Style(
     """
+    /* Design: claude.ai/design "UI consistency and accessibility" — warm cream
+       surfaces, orange brand, one accessible button/pill/table system. */
     :root{
-      --bg:#FFF8E1; --surface:#FFECB3; --surface-2:#FFE082;
-      --ink:#4E342E; --muted:#8D6E63;
-      --accent:#FB8C00; --accent-2:#F4511E; --danger:#E53935; --ok:#2E7D32;
+      --bg:#FDF6E9; --surface:#FFFDF8; --surface-2:#FBF1DC;
+      --line:#EAB378; --line-soft:#F1E2C6; --line-th:#E7CFA4; --divider:#F2DDBB;
+      --ink:#3A2A1A; --muted:#6B5840; --muted-2:#8A6D4A; --th:#7A5B36;
+      --accent:#EA580C; --accent-2:#F97316; --accent-ink:#B43E08; --accent-ink-2:#A8370A;
+      --ghost-border:#E59A4E; --input-border:#E0C089; --danger:#DC2626;
+      --ok-bg:#DCFCE7; --ok-fg:#15803D; --warn-bg:#FEF3C7; --warn-fg:#92400E;
+      --err-bg:#FEE2E2; --err-fg:#B91C1C; --info-bg:#DBEAFE; --info-fg:#1E40AF;
       --radius:12px;
+      --sans:'Nunito Sans',system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+      --brand:'Baloo 2','Nunito Sans',system-ui,sans-serif;
+      --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
     }
     *{box-sizing:border-box}
-    body{margin:0;background:var(--bg);color:var(--ink);
-      font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5}
-    header{background:linear-gradient(90deg,var(--accent),var(--accent-2));
-      color:#fff;padding:.8rem 1.2rem;display:flex;align-items:center;gap:1rem}
-    header h1{margin:0;font-size:1.25rem}
-    header nav{margin-left:auto;display:flex;gap:.6rem}
-    header a{color:#fff;text-decoration:none;opacity:.95;font-weight:600}
-    main{max-width:980px;margin:0 auto;padding:1.2rem}
-    .card{background:var(--surface);border:1px solid var(--surface-2);
-      border-radius:var(--radius);padding:1rem 1.2rem;margin-bottom:1.2rem}
-    h2{margin-top:0;color:var(--accent-2)}
-    input[type=text],input[type=password]{padding:.55rem .7rem;border:1px solid var(--surface-2);
-      border-radius:8px;background:#fffdf6;font-size:1rem;min-width:16rem}
-    button,.btn{cursor:pointer;border:none;border-radius:8px;padding:.55rem .9rem;
-      font-weight:600;font-size:.95rem;background:var(--accent);color:#fff}
-    button:hover{background:var(--accent-2)}
-    button.danger{background:var(--danger)}
-    button.ghost{background:transparent;color:var(--accent-2);border:1px solid var(--accent)}
-    table{width:100%;border-collapse:collapse}
-    th,td{text-align:left;padding:.5rem .4rem;border-bottom:1px solid var(--surface-2);font-size:.92rem}
-    th{color:var(--muted);font-weight:600}
-    .row{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
-    .badge{display:inline-block;padding:.15rem .5rem;border-radius:999px;font-size:.78rem;font-weight:700}
-    .badge.update{background:var(--danger);color:#fff}
-    .badge.current{background:var(--surface-2);color:var(--muted)}
-    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.85em}
-    .muted{color:var(--muted)}
-    progress{width:100%;height:14px;accent-color:var(--accent-2)}
-    .job{margin:.5rem 0}
-    .err{color:var(--danger);font-weight:600}
-    a.link{color:var(--accent-2)}
-    .stat-num{font-weight:800;color:var(--accent-2)}
-    main ul{list-style:none;padding-left:0;margin:.6rem 0}
-    main li{padding:.4rem 0;border-bottom:1px solid var(--surface-2)}
-    .notice{background:#FFF3E0;border:1px solid var(--accent);border-left:5px solid var(--accent);
-      border-radius:8px;padding:.7rem 1rem;margin-bottom:1.2rem;color:var(--ink)}
-    .notice a{color:var(--accent-2);font-weight:700}
-    /* interactive buttons: while their request is in flight, recolor + show busy label */
-    button{transition:background .12s ease}
+    body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+      line-height:1.5;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+    :focus-visible{outline:3px solid #0B5FFF;outline-offset:2px;border-radius:6px}
+    ::selection{background:#FFD9A8}
+
+    /* header — orange gradient bar (kept), centered content, active-page underline */
+    header{background:linear-gradient(90deg,var(--accent-2),var(--accent));
+      position:sticky;top:0;z-index:40;box-shadow:0 2px 0 rgba(120,50,0,.18)}
+    header .bar{max-width:1200px;margin:0 auto;height:64px;padding:0 24px;
+      display:flex;align-items:center;justify-content:space-between;gap:1rem}
+    header h1{margin:0;font-family:var(--brand);font-weight:800;font-size:23px;color:#fff}
+    header nav{display:flex;align-items:center;gap:2px}
+    header nav a{position:relative;color:#fff;text-decoration:none;font-weight:700;
+      font-size:16px;padding:10px 13px 14px;border-radius:8px}
+    header nav a:hover{background:rgba(255,255,255,.14)}
+    header nav a.active{font-weight:800}
+    header nav a.active::after{content:"";position:absolute;left:13px;right:13px;bottom:6px;
+      height:3px;background:#fff;border-radius:2px}
+
+    main{max-width:1200px;margin:0 auto;padding:28px 24px 64px}
+    .card{background:var(--surface);border:2px solid var(--line);
+      border-radius:var(--radius);padding:24px 28px;margin-bottom:22px}
+    h2{margin:0 0 16px;font-family:var(--brand);font-weight:700;font-size:25px;
+      color:var(--accent-ink);line-height:1.25}
+    h3{font-family:var(--brand);color:var(--accent-ink)}
+
+    input[type=text],input[type=password],input[type=search],select{height:44px;
+      border:2px solid var(--input-border);border-radius:8px;padding:0 14px;font-size:15px;
+      font-family:var(--sans);background:#fff;color:var(--ink)}
+    select{cursor:pointer;padding:0 10px}
+    input::placeholder{color:#A98C68}
+
+    button,.btn{cursor:pointer;display:inline-flex;align-items:center;justify-content:center;
+      gap:7px;height:40px;padding:0 18px;border-radius:8px;border:2px solid var(--accent);
+      background:var(--accent);color:#fff;font-family:var(--sans);font-weight:700;font-size:15px;
+      transition:background .12s ease,border-color .12s ease}
+    button:hover,.btn:hover{background:#D9500B;border-color:#D9500B}
+    button.ghost,.btn.ghost{background:transparent;border-color:var(--ghost-border);color:var(--accent-ink-2)}
+    button.ghost:hover,.btn.ghost:hover{background:#FFF3E0}
+    button.danger{background:var(--danger);border-color:var(--danger)}
+    button.danger:hover{background:#B91C1C;border-color:#B91C1C}
+    a.btn{text-decoration:none}
     button .busy{display:none}
-    button.is-busy{background:var(--accent-2);cursor:progress}
-    button.is-busy.danger{background:#B71C1C}
-    a.btn{text-decoration:none;display:inline-block;font-size:.95rem}
-    a.btn.ghost{background:transparent;color:var(--accent-2);border:1px solid var(--accent)}
+    button.is-busy{cursor:progress;opacity:.92}
     button.is-busy .idle{display:none}
     button.is-busy .busy{display:inline}
+
+    table{width:100%;border-collapse:collapse}
+    th{text-align:left;padding:12px 14px;font-size:12px;font-weight:800;letter-spacing:.07em;
+      text-transform:uppercase;color:var(--th);border-bottom:1px solid var(--line-th)}
+    td{padding:16px 14px;border-bottom:1px solid var(--line-soft);vertical-align:middle;font-size:15px}
+    .mono{font-family:var(--mono);font-size:.9em}
+    .muted{color:var(--muted)}
+    .err{color:var(--err-fg);font-weight:700}
+    a.link{color:var(--accent-ink-2);font-weight:700;text-decoration:underline;text-underline-offset:2px}
+    a.link.muted{color:var(--muted)}
+    .stat-num{font-weight:800;color:var(--accent-ink)}
+    .row{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
+
+    /* status pills (with a dot) — JobStatus component palette */
+    .badge{display:inline-flex;align-items:center;gap:7px;height:25px;padding:0 10px;
+      border-radius:6px;font-weight:800;font-size:12.5px;background:#EEE4D0;color:#5A4632}
+    .badge::before{content:"";width:8px;height:8px;border-radius:999px;background:currentColor}
+    .badge.current,.badge.ok{background:var(--ok-bg);color:var(--ok-fg)}
+    .badge.update,.badge.warn{background:var(--warn-bg);color:var(--warn-fg)}
+    .badge.err{background:var(--err-bg);color:var(--err-fg)}
+    .badge.info{background:var(--info-bg);color:var(--info-fg)}
+
+    progress{appearance:none;-webkit-appearance:none;width:100%;height:12px;
+      border:1px solid var(--line-th);border-radius:999px;overflow:hidden;background:#F3E6CC}
+    progress::-webkit-progress-bar{background:#F3E6CC}
+    progress::-webkit-progress-value{background:linear-gradient(90deg,var(--accent-2),var(--accent))}
+    progress::-moz-progress-bar{background:linear-gradient(90deg,var(--accent-2),var(--accent))}
+    .job{margin:.6rem 0}
+
+    main ul{list-style:none;padding-left:0;margin:.4rem 0}
+    main li{padding:12px 0;border-top:1px solid var(--line-soft)}
+
+    .notice{display:flex;gap:12px;background:var(--warn-bg);border:2px solid #E9B949;
+      border-radius:12px;padding:14px 18px;margin-bottom:22px;color:#7A4E0A;font-size:15.5px;line-height:1.55}
+    .notice a{color:var(--accent-ink-2);font-weight:800;text-decoration:underline}
+
     /* modal */
-    .modal-overlay{position:fixed;inset:0;background:rgba(40,20,0,.45);display:flex;
-      align-items:center;justify-content:center;z-index:1000;padding:1rem}
-    .modal-card{background:var(--bg);border:1px solid var(--surface-2);border-radius:14px;
-      max-width:680px;width:100%;max-height:86vh;overflow:auto;padding:1.2rem 1.4rem;
-      box-shadow:0 24px 70px rgba(0,0,0,.4)}
-    .modal-head{display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:.4rem}
-    .modal-head h3{margin:0;color:var(--accent-2)}
-    .modal-close{background:transparent;color:var(--muted);font-size:1.3rem;line-height:1;padding:.1rem .5rem}
-    .modal-close:hover{background:var(--surface-2)}
-    .filelist{max-height:48vh;overflow:auto;margin:.4rem 0}
+    .modal-overlay{position:fixed;inset:0;background:rgba(58,30,10,.55);display:flex;
+      align-items:center;justify-content:center;z-index:1000;padding:24px}
+    .modal-card{background:var(--surface);border:2px solid var(--line);border-radius:16px;
+      max-width:760px;width:100%;max-height:86vh;overflow:auto;padding:0 0 20px;
+      box-shadow:0 24px 60px rgba(58,30,10,.35)}
+    .modal-head{display:flex;align-items:center;justify-content:space-between;gap:1rem;
+      padding:22px 26px;border-bottom:2px solid var(--divider);margin-bottom:4px}
+    .modal-head h3{margin:0;font-size:23px}
+    .modal-card>*:not(.modal-head){margin-left:26px;margin-right:26px}
+    .modal-close{width:38px;height:38px;padding:0;border:2px solid var(--ghost-border);
+      background:transparent;color:var(--accent-ink-2);font-size:18px}
+    .modal-close:hover{background:#FFF3E0}
+    .filelist{max-height:48vh;overflow:auto;margin:.6rem 0;border:1px solid var(--line-soft);border-radius:10px}
+    .filelist table th{position:sticky;top:0;background:var(--surface-2)}
     """
 )
 
@@ -388,6 +450,7 @@ THEME = Style(
 HEAD = (
     Meta(charset="utf-8"),
     Meta(name="viewport", content="width=device-width, initial-scale=1"),
+    Link(rel="stylesheet", href="/static/fonts.css"),  # self-hosted Baloo 2 / Nunito Sans / JetBrains Mono
     THEME,
     Script(type="module", src="/static/datastar.js"),
     Script(src="/static/busy.js"),
@@ -456,14 +519,14 @@ def jobs_body(notice: str | None = None):
             if j.type == "download":  # only paused downloads can re-pick files
                 controls.append(ds_button("Edit files", f"@get('/ui/jobs/{j.id}/files')",
                                           indicator=_sig("e", j.id), busy="Opening…"))
-            state = Span(" paused", cls="muted")
+            state = status_pill("paused")
         else:
             controls.append(ds_button("Pause", f"@post('/ui/jobs/{j.id}/pause')",
                                        indicator=ind, cls="ghost"))
-            state = Span(f" {j.percent}%", cls="muted")
+            state = status_pill(j.status)
         items.append(
             Div(
-                Div(Span(f"{kind} ", cls="muted"), Span(j.repo_id, cls="mono"), state),
+                Div(Span(f"{kind} ", cls="muted"), Span(j.repo_id, cls="mono"), state, cls="row"),
                 Progress(value=str(j.done_bytes), max=str(max(j.total_bytes, 1))),
                 Div(
                     Span(f"{human_size(j.done_bytes)} / {human_size(j.total_bytes)}", cls="muted"),
@@ -605,20 +668,23 @@ def summary_panel():
     return live_panel(summary_fragment(), wrapper_id="summary", stream_url="/ui/summary")
 
 
-def page(*content, sess=None):
+_NAV = [("Home", "/", "home"), ("Archives", "/archives", "archives"),
+        ("Jobs", "/jobs", "jobs"), ("Stores", "/stores", "stores"),
+        ("Settings", "/settings", "settings"), ("Logout", "/logout", None)]
+
+
+def page(*content, sess=None, active=None):
     csrf = auth.csrf_token(sess) if sess is not None else ""
+    links = []
+    for label, href, key in _NAV:
+        kw = {"aria-current": "page", "cls": "active"} if key and key == active else {}
+        links.append(A(label, href=href, **kw))
     return Title("hugger"), Div(
-        Header(
+        Header(Div(
             H1("🤗 hugger"),
-            Nav(
-                A("Home", href="/"),
-                A("Archives", href="/archives"),
-                A("Jobs", href="/jobs"),
-                A("Stores", href="/stores"),
-                A("Settings", href="/settings"),
-                A("Logout", href="/logout"),
-            ),
-        ),
+            Nav(*links, **{"aria-label": "Primary"}),
+            cls="bar",
+        )),
         Main(*content),
         Div(id="modal"),  # action modals (file lists) render here
         id="app",
@@ -680,7 +746,7 @@ def index(sess):
             cls="notice",
         ))
     blocks += [search, downloads, Div(summary_panel(), cls="card")]
-    return page(*blocks, sess=sess)
+    return page(*blocks, sess=sess, active="home")
 
 
 @rt("/archives")
@@ -690,7 +756,7 @@ def archives_page(sess):
     return page(
         Div(archives_panel(), cls="card"),
         Div(H2("Jobs"), jobs_panel(), cls="card"),
-        sess=sess,
+        sess=sess, active="archives",
     )
 
 
@@ -913,7 +979,7 @@ def manage_list_fragment(repo_id: str):
 def manage_page(req, sess, repo_id: str):
     rec = store.get_archive(repo_id)
     if not rec:
-        return page(Div(P("Not archived.", cls="muted"), cls="card"), sess=sess)
+        return page(Div(P("Not archived.", cls="muted"), cls="card"), sess=sess, active="archives")
     move = _move_control(repo_id, rec.get("store_id"), store.list_stores())
     info = Div(
         H2(f"Manage {repo_id}"),
@@ -928,7 +994,7 @@ def manage_page(req, sess, repo_id: str):
         info,
         Div(manage_list_fragment(repo_id), cls="card"),
         Div(H2("Jobs"), jobs_panel(), cls="card"),
-        sess=sess,
+        sess=sess, active="archives",
     )
 
 
@@ -1007,7 +1073,7 @@ def job_history_fragment():
     names = {s["id"]: s["name"] for s in store.list_stores()}
     rows = []
     for j in store.recent_jobs():
-        badge = Span(j["status"], cls="badge update" if j["status"] == "error" else "badge current")
+        badge = status_pill(j["status"])
         detail = j["error"] or ""
         if j["status"] == "retried" and j.get("retried_by"):
             detail = f"→ retried as {j['retried_by']}"
@@ -1044,7 +1110,7 @@ def jobs_history_page(sess):
     return page(
         Div(H2("Live jobs"), jobs_panel(), cls="card"),
         Div(job_history_fragment(), cls="card"),
-        sess=sess,
+        sess=sess, active="jobs",
     )
 
 
@@ -1159,7 +1225,7 @@ def stores_body(notice: str | None = None):
 
 @rt("/stores")
 def stores_page(sess):
-    return page(Div(stores_body(), cls="card"), sess=sess)
+    return page(Div(stores_body(), cls="card"), sess=sess, active="stores")
 
 
 @rt("/ui/stores/add", methods=["POST"])
@@ -1254,7 +1320,7 @@ def settings(sess, msg: str = ""):
         P("HTTPS-only mode: " + ("on" if cfg.https_only else "off"), cls="muted"),
         cls="card",
     )
-    return page(note, token_card, hf_card, pw_card, info, sess=sess)
+    return page(note, token_card, hf_card, pw_card, info, sess=sess, active="settings")
 
 
 @rt("/settings/hf-token", methods=["POST"])
