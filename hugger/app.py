@@ -580,21 +580,21 @@ def jobs_body(notice: str | None = None):
                 Div(job_kind(j.type), Span(j.repo_id, cls="mono"), state, cls="row"),
                 Progress(value=str(j.done_bytes), max=str(max(j.total_bytes, 1))),
                 Div(*stats, *controls, cls="row"),
-                cls="job", id=f"job-{ind}",
+                cls="job card", id=f"job-{ind}",
             )
         )
     for j in finished:
         if j.status == "error":
-            items.append(Div(Span(j.repo_id, cls="mono"), Span(f" {_job_verb(j)} failed: ", cls="err"), Span(j.error or "", cls="err"), cls="job"))
+            items.append(Div(Span(j.repo_id, cls="mono"), Span(f" {_job_verb(j)} failed: ", cls="err"), Span(j.error or "", cls="err"), cls="card compact"))
         else:
-            items.append(Div(Span(check_icon(15), cls="ok-check"), Span(j.repo_id, cls="mono"), Span(f" {_job_done_word(j)}", cls="muted"), cls="job"))
-    inner = items or [P("No active jobs.", cls="muted")]
+            items.append(Div(Span(check_icon(15), cls="ok-check"), Span(j.repo_id, cls="mono"), Span(f" {_job_done_word(j)}", cls="muted"), cls="card compact"))
     if jobs.MAX_ACTIVE == 1 and sum(1 for j in active if j.status in ("queued", "running")) > 1:
-        inner.append(P(info_icon(14), " One job transfers at a time; the rest wait in the queue. "
+        items.append(P(info_icon(14), " One job transfers at a time; the rest wait in the queue. "
                        "Use “Run now” to jump the queue.", cls="muted note"))
     if notice:
-        inner = [P(notice, cls="err"), *inner]
-    return Div(*inner, id="jobs-body")
+        items = [Div(P(notice, cls="err"), cls="card"), *items]
+    # The wrapper keeps its id for the SSE morph; each job is its own top-level card.
+    return Div(*items, id="jobs-body")
 
 
 def jobs_panel(notice: str | None = None):
@@ -785,10 +785,9 @@ def index(sess):
         cls="row mb",
     )
     downloads = Div(
-        H2("Downloads"),
+        H2("Download a model"),
         Div(store_selector(), cls="mb-sm"),
         manual,
-        Div(jobs_panel(), cls="divider-top"),
         cls="card",
     )
     blocks = []
@@ -800,7 +799,9 @@ def index(sess):
               " for faster downloads and to avoid rate limits."),
             cls="notice",
         ))
-    blocks += [search, downloads, Div(summary_panel(), cls="card")]
+    # jobs_panel() emits each active job as its own top-level card (decoupled
+    # from the download form above).
+    blocks += [search, downloads, jobs_panel(), Div(summary_panel(), cls="card")]
     return page(*blocks, sess=sess, active="home")
 
 
@@ -810,7 +811,7 @@ def archives_page(sess):
     # their progress is visible right here.
     return page(
         Div(archives_panel(), cls="card"),
-        Div(H2("Jobs", cls="head-line"), jobs_panel(), cls="card"),
+        jobs_panel(),  # each active job is its own top-level card
         sess=sess, active="archives",
     )
 
@@ -1066,7 +1067,7 @@ def manage_page(req, sess, repo_id: str):
         parts.append(_bad_files_notice(repo_id, bad))
     parts += [
         Div(H2("Files", style="font-size:20px;margin-bottom:8px"), manage_list_fragment(repo_id), cls="card"),
-        Div(H2("Jobs", cls="head-line"), jobs_panel(), cls="card"),
+        jobs_panel(),  # each active job is its own top-level card
     ]
     return page(*parts, sess=sess, active="archives")
 
@@ -1219,7 +1220,7 @@ def job_history_fragment():
 @rt("/jobs")
 def jobs_history_page(sess):
     return page(
-        Div(H2("Live jobs"), jobs_panel(), cls="card"),
+        jobs_panel(),  # each active job is its own top-level card
         Div(job_history_fragment(), cls="card"),
         sess=sess, active="jobs",
     )

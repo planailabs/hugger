@@ -28,6 +28,8 @@
   .breadcrumb { @apply flex items-center gap-2 text-[15px] mb-4; }
   .breadcrumb .crumb-sep { @apply text-muted2; }
   .card { @apply bg-surface border-2 border-line rounded-xl py-6 px-7 mb-[22px]; }
+  /* compact card for one-line job entries (finished/error) */
+  .card.compact { @apply flex items-center flex-wrap gap-1.5 py-3.5 px-6 mb-3; }
   h2 { @apply m-0 mb-4 font-brand font-bold text-[25px] text-accentink leading-[1.25]; }
   h3 { @apply font-brand text-accentink; }
 
