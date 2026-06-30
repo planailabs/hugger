@@ -39,7 +39,14 @@
   .row > input.narrow { @apply flex-none min-w-0 w-[200px]; }
   input.mono { @apply font-mono text-sm; }
   input[type=checkbox] { @apply w-[17px] h-[17px] cursor-pointer flex-none; accent-color: theme(colors.accent); }
-  .kind { @apply inline-flex items-center gap-1.5 whitespace-nowrap; }
+  /* job-type chip: distinct hue per kind so the work is obvious at a glance */
+  .kind { @apply inline-flex items-center gap-1.5 whitespace-nowrap font-extrabold
+    text-[11.5px] uppercase tracking-[.06em] px-2 h-[22px] rounded-md; }
+  .kind-dl { background: theme(colors.warnbg); color: theme(colors.accentink); }
+  .kind-vf { background: theme(colors.infobg); color: theme(colors.infofg); }
+  .kind-mv { background: #EDE7FB; color: #5B3FA8; }
+  .ok-check { @apply inline-flex items-center text-okfg; }
+  p.note { @apply flex items-center gap-1.5; }
   .fcheck { @apply flex items-center gap-[11px] cursor-pointer; }
 
   /* buttons — fixed (not flexible) sizing: never grow/shrink, with a min width so
@@ -109,7 +116,7 @@
   /* notice */
   .notice { @apply flex items-start gap-3 bg-warnbg border-2 rounded-xl py-3.5 px-[18px] mb-[22px] text-[15.5px] leading-[1.55];
     border-color: #E9B949; color: #7A4E0A; }
-  .notice-icon { @apply text-xl leading-[1.5] flex-none; }
+  .notice-icon { @apply flex-none mt-px; }
   .notice p { @apply m-0; }
   .notice a { @apply text-accentink2 font-extrabold underline; }
 

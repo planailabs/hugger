@@ -122,6 +122,48 @@ def verify_icon(size: int = 16):
     )
 
 
+# Move icon: left/right arrows (transfer between stores).
+def move_icon(size: int = 16):
+    return NotStr(
+        f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" '
+        'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" '
+        'aria-hidden="true" style="flex:none"><polyline points="17 1 21 5 17 9"></polyline>'
+        '<path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline>'
+        '<path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>'
+    )
+
+
+# Check icon: a tick (a finished job).
+def check_icon(size: int = 16):
+    return NotStr(
+        f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" '
+        'stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" '
+        'aria-hidden="true" style="flex:none"><polyline points="20 6 9 17 4 12"></polyline></svg>'
+    )
+
+
+# Warning icon: a triangle alert (notices).
+def warn_icon(size: int = 20):
+    return NotStr(
+        f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" '
+        'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" '
+        'aria-hidden="true" style="flex:none"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 '
+        '2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13">'
+        '</line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>'
+    )
+
+
+# Info icon: an 'i' in a circle (muted notes).
+def info_icon(size: int = 16):
+    return NotStr(
+        f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" '
+        'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" '
+        'aria-hidden="true" style="flex:none;vertical-align:-2px"><circle cx="12" cy="12" r="10">'
+        '</circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8">'
+        '</line></svg>'
+    )
+
+
 def ds_button(label: str, action: str, *, indicator: str, busy: str | None = None,
               cls: str = "", icon=None, **kw):
     """Button that fires a Datastar action (e.g. "@post('/x')") with built-in busy
@@ -162,13 +204,18 @@ def status_pill(label: str):
     return Span(label, cls=f"badge {_PILL.get(label.lower(), '')}".rstrip())
 
 
+_KIND = {
+    "download": ("download", dl_icon, "kind-dl"),
+    "verify": ("verify", verify_icon, "kind-vf"),
+    "move": ("move", move_icon, "kind-mv"),
+}
+
+
 def job_kind(job_type: str):
-    """Inline job-kind indicator: icon + label per job type."""
-    if job_type == "move":
-        return Span("⇄ move", cls="muted kind")
-    if job_type == "verify":
-        return Span(verify_icon(14), "verify", cls="muted kind")
-    return Span(dl_icon(14), "download", cls="muted kind")
+    """A coloured job-type chip (icon + label) — distinct hue per type so the
+    kind of work is obvious at a glance."""
+    label, icon, cls = _KIND.get(job_type, _KIND["download"])
+    return Span(icon(13), label, cls=f"kind {cls}")
 
 
 # --- reusable Datastar components ----------------------------------------
@@ -505,11 +552,11 @@ def jobs_body(notice: str | None = None):
         if j.status == "error":
             items.append(Div(Span(j.repo_id, cls="mono"), Span(f" {_job_verb(j)} failed: ", cls="err"), Span(j.error or "", cls="err"), cls="job"))
         else:
-            items.append(Div(Span("✓ ", cls=""), Span(j.repo_id, cls="mono"), Span(f" {_job_done_word(j)}", cls="muted"), cls="job"))
+            items.append(Div(Span(check_icon(15), cls="ok-check"), Span(j.repo_id, cls="mono"), Span(f" {_job_done_word(j)}", cls="muted"), cls="job"))
     inner = items or [P("No active jobs.", cls="muted")]
     if jobs.MAX_ACTIVE == 1 and sum(1 for j in active if j.status in ("queued", "running")) > 1:
-        inner.append(P("ℹ︎ One job transfers at a time; the rest wait in the queue. "
-                       "Use “Run now” to jump the queue.", cls="muted"))
+        inner.append(P(info_icon(14), " One job transfers at a time; the rest wait in the queue. "
+                       "Use “Run now” to jump the queue.", cls="muted note"))
     if notice:
         inner = [P(notice, cls="err"), *inner]
     return Div(*inner, id="jobs-body")
@@ -709,7 +756,7 @@ def index(sess):
     blocks = []
     if hub.hf_token_source() == "none":
         blocks.append(Div(
-            Span("⚠️", cls="notice-icon", **{"aria-hidden": "true"}),
+            Span(warn_icon(20), cls="notice-icon"),
             P("No HuggingFace token set. ",
               A("Add one in Settings", href="/settings"),
               " for faster downloads and to avoid rate limits."),
@@ -991,7 +1038,7 @@ def _bad_files_notice(repo_id: str, bad: list[str]):
     (deletes them and resumes the download so only those are re-fetched)."""
     shown = ", ".join(bad[:6]) + (f" … (+{len(bad) - 6} more)" if len(bad) > 6 else "")
     return Div(
-        Span("⚠️", cls="notice-icon", **{"aria-hidden": "true"}),
+        Span(warn_icon(20), cls="notice-icon"),
         Div(
             P(Strong(f"{len(bad)} file(s) failed verification"),
               " — the on-disk bytes don't match the expected hash."),
