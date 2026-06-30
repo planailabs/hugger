@@ -42,9 +42,9 @@
   /* job-type chip: distinct hue per kind so the work is obvious at a glance */
   .kind { @apply inline-flex items-center gap-1.5 whitespace-nowrap font-extrabold
     text-[11.5px] uppercase tracking-[.06em] px-2 h-[22px] rounded-md; }
-  .kind-dl { background: theme(colors.warnbg); color: theme(colors.accentink); }
-  .kind-vf { background: theme(colors.infobg); color: theme(colors.infofg); }
-  .kind-mv { background: #EDE7FB; color: #5B3FA8; }
+  .kind-dl { background: theme(colors.infobg); color: theme(colors.infofg); }
+  .kind-vf { background: #EDE7FB; color: #5B3FA8; }
+  .kind-mv { background: theme(colors.warnbg); color: theme(colors.accentink); }
   .ok-check { @apply inline-flex items-center text-okfg; }
   p.note { @apply flex items-center gap-1.5; }
   .fcheck { @apply flex items-center gap-[11px] cursor-pointer; }
