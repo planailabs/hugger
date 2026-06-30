@@ -40,10 +40,11 @@
   .kind { @apply inline-flex items-center gap-1.5 whitespace-nowrap; }
   .fcheck { @apply flex items-center gap-[11px] cursor-pointer; }
 
-  /* buttons */
+  /* buttons — fixed (not flexible) sizing: never grow/shrink, with a min width so
+     content-length and busy-label swaps don't change their size */
   button, .btn { @apply cursor-pointer inline-flex items-center justify-center gap-[7px] h-10 px-[18px]
-    rounded-lg border-2 border-accent bg-accent text-white font-sans font-bold text-[15px] whitespace-nowrap
-    transition-colors duration-150; }
+    min-w-[104px] flex-none rounded-lg border-2 border-accent bg-accent text-white font-sans font-bold
+    text-[15px] whitespace-nowrap transition-colors duration-150; }
   button:hover, .btn:hover { @apply bg-accenth border-accenth; }
   button.ghost, .btn.ghost { @apply bg-transparent border-ghostb text-accentink2; }
   button.ghost:hover, .btn.ghost:hover { @apply bg-ghosth; }
@@ -65,7 +66,7 @@
   td.wrap, td .wrap { @apply whitespace-normal; overflow-wrap: anywhere; }
   th.r, td.r { @apply text-right; }
   .actions { @apply flex justify-end gap-2 flex-nowrap; }
-  .actions button, .actions .btn { @apply h-9 px-3.5 text-sm; }
+  .actions button, .actions .btn { @apply h-9 px-3.5 text-sm min-w-[92px]; }
   .section-head { @apply flex items-center flex-wrap gap-4 pb-3.5 border-b-2 border-divider mb-4; }
   .section-head h2 { @apply m-0; }
 
@@ -102,9 +103,18 @@
   main li { @apply py-3 border-t border-linesoft; }
 
   /* notice */
-  .notice { @apply flex gap-3 bg-warnbg border-2 rounded-xl py-3.5 px-[18px] mb-[22px] text-[15.5px] leading-[1.55];
+  .notice { @apply flex items-start gap-3 bg-warnbg border-2 rounded-xl py-3.5 px-[18px] mb-[22px] text-[15.5px] leading-[1.55];
     border-color: #E9B949; color: #7A4E0A; }
+  .notice-icon { @apply text-xl leading-[1.5] flex-none; }
+  .notice p { @apply m-0; }
   .notice a { @apply text-accentink2 font-extrabold underline; }
+
+  /* settings: labelled read-only token field + server info grid */
+  .field-label { @apply block text-[13px] font-bold text-th mb-1.5; }
+  .token-field { @apply w-full; background: #FBF4E4; }
+  .server-grid { @apply grid gap-x-[18px] gap-y-2.5 text-[15px] m-0; grid-template-columns: auto 1fr; }
+  .server-grid dt { @apply text-muted2 font-bold; }
+  .server-grid dd { @apply m-0; }
 
   /* modal */
   .modal-overlay { @apply fixed inset-0 flex items-center justify-center z-[1000] p-6; background: rgba(58,30,10,.55); }

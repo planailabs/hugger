@@ -649,9 +649,10 @@ def index(sess):
     blocks = []
     if hub.hf_token_source() == "none":
         blocks.append(Div(
-            "⚠️ No HuggingFace token set. ",
-            A("Add one in Settings", href="/settings"),
-            " for faster downloads and to avoid rate limits.",
+            Span("⚠️", cls="notice-icon", **{"aria-hidden": "true"}),
+            P("No HuggingFace token set. ",
+              A("Add one in Settings", href="/settings"),
+              " for faster downloads and to avoid rate limits."),
             cls="notice",
         ))
     blocks += [search, downloads, Div(summary_panel(), cls="card")]
@@ -993,13 +994,13 @@ def job_history_fragment():
             Td(job_kind(j["type"])),
             Td(j["repo_id"], cls="mono wrap"),
             Td(names.get(j["store_id"]) or "—", cls="muted"),
-            Td(badge),
-            Td(detail[:90], cls="err wrap" if detail else "muted"),
+            # error/retried detail is the status's title (hover) — no separate column
+            Td(badge, **({"title": detail} if detail else {})),
             Td((j["updated_at"] or "")[:19].replace("T", " "), cls="muted mono"),
-            Td(retry),
+            Td(retry, cls="r"),
         ))
     body = (Table(Thead(Tr(Th("Type"), Th("Model"), Th("Store"), Th("Status"),
-                           Th("Detail"), Th("Updated (UTC)"), Th(""))), Tbody(*rows))
+                           Th("Updated (UTC)"), Th("", cls="r"))), Tbody(*rows))
             if rows else P("No jobs yet.", cls="muted"))
     header = Div(
         H2("Job history"),
@@ -1189,7 +1190,8 @@ def settings(sess, msg: str = ""):
         H2("Extension API token"),
         P("Paste this into the hugger browser extension to authorize it. "
           "Keep it secret — it grants archive access.", cls="muted"),
-        Div(Span(cfg.api_token, cls="mono"), cls="card", style="background:#fffdf6"),
+        Label("Token", **{"for": "ext-token"}, cls="field-label"),
+        Input(id="ext-token", type="text", value=cfg.api_token, readonly=True, cls="mono token-field"),
         Form(action_button("Rotate token", cls="danger", busy="Rotating…"),
              method="post", action="/settings/rotate-token"),
         cls="card",
@@ -1224,9 +1226,12 @@ def settings(sess, msg: str = ""):
     )
     info = Div(
         H2("Server"),
-        P(f"Version {VERSION}", cls="muted"),
-        P("Archive dir: ", Span(str(ARCHIVE_DIR), cls="mono")),
-        P("HTTPS-only mode: " + ("on" if cfg.https_only else "off"), cls="muted"),
+        Dl(
+            Dt("Version"), Dd(VERSION, cls="mono"),
+            Dt("Archive dir"), Dd(str(ARCHIVE_DIR), cls="mono"),
+            Dt("HTTPS-only mode"), Dd("on" if cfg.https_only else "off", cls="mono"),
+            cls="server-grid",
+        ),
         cls="card",
     )
     return page(note, token_card, hf_card, pw_card, info, sess=sess, active="settings")
