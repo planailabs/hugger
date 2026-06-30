@@ -113,7 +113,7 @@
   .field-label { @apply block text-[13px] font-bold text-th mb-1.5; }
   /* input.* to beat input[type=text]'s bg-white; mb-4 spaces it from the button */
   input.token-field { @apply w-full mb-4; background: #FBF4E4; }
-  .server-grid { @apply grid gap-x-[18px] gap-y-2.5 text-[15px] m-0; grid-template-columns: auto 1fr; }
+  .server-grid { @apply grid gap-x-[18px] gap-y-2.5 text-base m-0; grid-template-columns: auto 1fr; }
   .server-grid dt { @apply text-muted2 font-bold; }
   .server-grid dd { @apply m-0; }
 
