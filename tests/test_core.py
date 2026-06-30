@@ -432,6 +432,63 @@ def test_remove_file_updates_cache():
     store.delete_archive_and_hashes(repo)
 
 
+def test_job_eta_and_as_dict_rate():
+    j = jobs.Job(id="eta1", repo_id="o/m", status="running", total_bytes=1000, done_bytes=200)
+    j.rate = 100.0
+    assert j.eta == 8  # (1000-200)/100
+    d = j.as_dict()
+    assert d["rate"] == 100 and d["eta"] == 8 and d["stalls"] == 0
+    # rate/eta only meaningful while running
+    j.status = "paused"
+    assert j.eta is None and j.as_dict()["rate"] == 0
+
+
+def _scheduler_fixture():
+    """A JobManager whose workers don't actually spawn — so scheduling decisions
+    (which job runs vs. waits) can be asserted deterministically."""
+    a = store.get_default_store()["id"]
+    mgr = jobs.JobManager()
+    mgr._spawn = lambda job: None  # claim slots without launching real workers
+    return mgr, a
+
+
+def test_scheduler_serializes_at_max_active_1():
+    mgr, a = _scheduler_fixture()
+    old = jobs.MAX_ACTIVE
+    jobs.MAX_ACTIVE = 1
+    try:
+        j1 = jobs.Job(id="sc1", repo_id="o/a", store_id=a, total_bytes=100)
+        j2 = jobs.Job(id="sc2", repo_id="o/b", store_id=a, total_bytes=100)
+        mgr._register(j1); mgr._register(j2)
+        assert j1.status == "running" and j2.status == "queued"  # one at a time
+        # pausing a queued job just marks it; resume returns it to the queue
+        mgr.pause("sc2"); assert j2.status == "paused"
+        mgr.resume("sc2"); assert j2.status == "queued"  # slot still held by j1
+    finally:
+        jobs.MAX_ACTIVE = old
+        store.delete_finished_jobs()
+
+
+def test_run_now_preempts_running_job():
+    mgr, a = _scheduler_fixture()
+    old = jobs.MAX_ACTIVE
+    jobs.MAX_ACTIVE = 1
+    try:
+        j1 = jobs.Job(id="rn1", repo_id="o/a", store_id=a, total_bytes=100, done_bytes=90)
+        j2 = jobs.Job(id="rn2", repo_id="o/b", store_id=a, total_bytes=100)
+        mgr._register(j1); mgr._register(j2)
+        assert j1.status == "running" and j2.status == "queued"
+        mgr.run_now("rn2")
+        assert mgr._order[0] == "rn2"        # jumped the queue
+        assert j1._preempt.is_set()          # running job told to step aside
+        # emulate the preempted worker re-queuing itself + freeing its slot
+        j1.status = "queued"; mgr._schedule()
+        assert j2.status == "running" and j1.status == "queued"
+    finally:
+        jobs.MAX_ACTIVE = old
+        store.delete_finished_jobs()
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

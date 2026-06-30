@@ -416,6 +416,7 @@ def test_jobs_pause_button_is_datastar():
     class _J:
         id = "abc-123"; type = "download"; status = "running"; repo_id = "o/m"
         percent = 10; done_bytes = 1; total_bytes = 10
+        rate = 0.0; stalls = 0; eta = None
     orig = jobs.manager.active
     jobs.manager.active = lambda: [_J()]
     try:

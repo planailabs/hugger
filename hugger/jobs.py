@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +26,21 @@ from pathlib import Path
 from . import _live, hub, metadata, store, util
 
 _dir_size = util.dir_size  # kept for tests/back-compat
+
+
+def _int_env(name: str, default: int, lo: int = 0) -> int:
+    try:
+        return max(lo, int(os.environ.get(name, str(default))))
+    except ValueError:
+        return default
+
+
+# How many jobs may actively transfer at once; the rest wait as "queued" and are
+# started by the scheduler as slots free. 1 = serial downloads (default).
+MAX_ACTIVE = _int_env("HUGGER_MAX_ACTIVE", 1, lo=1)
+# A running download making no progress for this many seconds is considered
+# stalled and its worker is restarted in place (0 disables).
+STALE_SECS = float(os.environ.get("HUGGER_STALE_SECS", "90") or 0)
 
 
 class InsufficientSpace(Exception):
@@ -41,6 +57,19 @@ def store_repo_path(store_path: str, repo_id: str) -> Path:
     return Path(store_path).joinpath(*repo_id.split("/"))
 
 
+def _terminate(proc: subprocess.Popen | None) -> None:
+    """Stop a worker subprocess, escalating to kill if it ignores SIGTERM."""
+    if not proc or proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    except Exception:
+        pass
+
+
 @dataclass
 class Job:
     id: str
@@ -54,14 +83,28 @@ class Job:
     sha: str | None = None
     store_id: str | None = None
     src_store_id: str | None = None
+    rate: float = 0.0               # smoothed bytes/sec (runtime only)
+    stalls: int = 0                 # auto-restarts due to staleness (runtime only)
     _stop: threading.Event = field(default_factory=threading.Event, repr=False)
+    _preempt: threading.Event = field(default_factory=threading.Event, repr=False)
     _proc: subprocess.Popen | None = field(default=None, repr=False)
+    _last_progress_t: float = field(default=0.0, repr=False)
 
     @property
     def percent(self) -> int:
         if self.total_bytes <= 0:
             return 0
         return min(100, int(self.done_bytes * 100 / self.total_bytes))
+
+    @property
+    def eta(self) -> int | None:
+        """Seconds until done at the current rate, or None if not estimable."""
+        if self.status != "running" or self.rate <= 0:
+            return None
+        remaining = self.total_bytes - self.done_bytes
+        if remaining <= 0:
+            return None
+        return int(remaining / self.rate)
 
     def persist(self) -> None:
         store.save_job({
@@ -73,17 +116,20 @@ class Job:
         _live.bump()  # wake the live SSE panels on any status change
 
     def as_dict(self) -> dict:
+        running = self.status == "running"
         return {
             "id": self.id, "repo_id": self.repo_id, "revision": self.revision,
             "type": self.type, "status": self.status, "total_bytes": self.total_bytes,
             "done_bytes": self.done_bytes, "percent": self.percent, "error": self.error,
             "store_id": self.store_id, "src_store_id": self.src_store_id,
+            "rate": round(self.rate) if running else 0, "eta": self.eta, "stalls": self.stalls,
         }
 
 
 class JobManager:
     def __init__(self) -> None:
         self._jobs: dict[str, Job] = {}
+        self._order: list[str] = []  # scheduling priority (front = highest)
         self._lock = threading.Lock()
         self._shutting_down = False
 
@@ -144,7 +190,7 @@ class JobManager:
         job = Job(id=uuid.uuid4().hex[:12], repo_id=repo_id, revision=revision,
                   type="download", store_id=st["id"], total_bytes=meta["total_size"],
                   done_bytes=already, sha=info["sha"])
-        self._register_and_run(job)
+        self._register(job)
         return job
 
     def _active_download_for(self, repo_id: str) -> Job | None:
@@ -183,28 +229,61 @@ class JobManager:
         job = Job(id=uuid.uuid4().hex[:12], repo_id=repo_id, revision=rec["revision"],
                   type="move", store_id=dest_store_id, src_store_id=rec["store_id"],
                   sha=rec["sha"], total_bytes=rec["size_bytes"] or 0)
-        self._register_and_run(job)
+        self._register(job)
         return job
 
-    def _register_and_run(self, job: Job) -> None:
+    def _register(self, job: Job) -> None:
         with self._lock:
             self._jobs[job.id] = job
+            if job.id not in self._order:
+                self._order.append(job.id)
         job.status = "queued"
         job.persist()
-        self._spawn(job)
+        self._schedule()
+
+    def _schedule(self) -> None:
+        """Start queued jobs (in priority order) until MAX_ACTIVE are running.
+        Called whenever a slot might have freed (registration, pause, finish)."""
+        if self._shutting_down:
+            return
+        to_start: list[Job] = []
+        with self._lock:
+            running = sum(1 for j in self._jobs.values() if j.status == "running")
+            slots = MAX_ACTIVE - running
+            for jid in self._order:
+                if slots <= 0:
+                    break
+                j = self._jobs.get(jid)
+                if j and j.status == "queued":
+                    j.status = "running"  # claim the slot now so we don't double-pick
+                    j._stop = threading.Event()
+                    j._preempt = threading.Event()
+                    to_start.append(j)
+                    slots -= 1
+        for j in to_start:
+            j.persist()
+            self._spawn(j)
 
     def _spawn(self, job: Job) -> None:
         target = self._run_download if job.type == "download" else self._run_move
         threading.Thread(target=target, args=(job,), daemon=True).start()
 
-    # --- pause / resume ---------------------------------------------------
+    # --- pause / resume / prioritise -------------------------------------
     def pause(self, job_id: str) -> None:
         job = self._jobs.get(job_id)
-        if job and job.status in ("queued", "running"):
+        if not job:
+            return
+        if job.status == "running":
+            # Running: signal the worker to stop; it persists `paused` and frees
+            # the slot (its scheduler call then starts the next queued job).
             job._stop.set()
             proc = job._proc
             if proc and proc.poll() is None:
                 proc.terminate()
+        elif job.status == "queued":
+            # Queued: no worker yet — just mark it paused so the scheduler skips it.
+            job.status = "paused"
+            job.persist()
 
     def resume(self, job_id: str) -> None:
         job = self._jobs.get(job_id)
@@ -212,7 +291,33 @@ class JobManager:
             job._stop = threading.Event()
             job.status = "queued"
             job.persist()
-            self._spawn(job)
+            self._schedule()  # start now if a slot is free, else wait in the queue
+
+    def run_now(self, job_id: str) -> None:
+        """Prioritise a queued job: move it to the front and, if all slots are
+        busy, preempt a running job (which returns to 'queued' and auto-resumes
+        when a slot frees) so the chosen job starts immediately."""
+        job = self._jobs.get(job_id)
+        if not job or job.status != "queued":
+            return
+        victim: Job | None = None
+        with self._lock:
+            if job_id in self._order:
+                self._order.remove(job_id)
+            self._order.insert(0, job_id)
+            running = [j for j in self._jobs.values() if j.status == "running"]
+            if len(running) >= MAX_ACTIVE and running:
+                # demote the running job that's furthest from done (least lost work)
+                victim = min(running, key=lambda j: j.percent)
+        if victim is not None:
+            victim._preempt.set()
+            proc = victim._proc
+            if proc and proc.poll() is None:
+                proc.terminate()
+            # the preempted worker re-queues itself and calls _schedule, which
+            # then picks our now-front job.
+        else:
+            self._schedule()
 
     def retry(self, job_id: str) -> Job | None:
         """Restart a failed job (it may only exist in the DB after a restart).
@@ -248,6 +353,7 @@ class JobManager:
         with self._lock:
             self._jobs = {k: v for k, v in self._jobs.items()
                           if v.status in ("queued", "running", "paused")}
+            self._order = [jid for jid in self._order if jid in self._jobs]
 
     # --- queries ----------------------------------------------------------
     def get(self, job_id: str) -> Job | None:
@@ -287,8 +393,9 @@ class JobManager:
             job.done_bytes = self._on_disk_bytes(job)  # seed progress from disk
             with self._lock:
                 self._jobs[job.id] = job
-            if job.status != "paused":
-                self._spawn(job)
+                self._order.append(job.id)
+        # Start up to MAX_ACTIVE of the non-paused jobs; the rest stay queued.
+        self._schedule()
 
     # --- workers ----------------------------------------------------------
     def _run_download(self, job: Job) -> None:
@@ -318,40 +425,64 @@ class JobManager:
             job.persist()
 
             def poll():
+                # Track on-disk progress, a smoothed transfer rate (EWMA over ~1s
+                # samples), and the time of the last byte gained (for stall detection).
+                last_t = time.monotonic(); last_b = job.done_bytes
                 while not poll_stop.is_set():
                     prev = job.done_bytes
                     job.done_bytes = metadata.read_progress(dest, meta, base=base)
+                    now = time.monotonic()
                     if job.done_bytes != prev:
+                        job._last_progress_t = now
                         _live.bump()  # push progress to the live panels as it changes
+                    dt = now - last_t
+                    if dt >= 1.0:
+                        inst = max(0, job.done_bytes - last_b) / dt
+                        job.rate = inst if job.rate <= 0 else 0.4 * inst + 0.6 * job.rate
+                        last_t = now; last_b = job.done_bytes
                     poll_stop.wait(1.0)
 
             threading.Thread(target=poll, daemon=True).start()
 
-            env = dict(os.environ)
-            env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
-            # Keep hf's working cache (Xet chunk cache HF_XET_CACHE=$HF_HOME/xet,
-            # etc.) on the target store's volume — not the process home — so it
-            # doesn't bloat / fill another filesystem and stays with the data.
-            # (We pass the token explicitly, so HF_HOME isn't used for auth.)
-            env["HF_HOME"] = str(Path(st["path"]) / ".hf")
-            # NOTE: do NOT disable Xet here (see AGENTS.md). Xet is the fast default
-            # transfer. Progress is synced from hf's tqdm bytes bar; on the classic
-            # path .incomplete files also let read_progress reflect bytes-on-disk.
-            proc = subprocess.Popen(
-                [sys.executable, "-m", "hugger._dlworker", job.repo_id, job.revision, str(dest)],
-                env=env,
-            )
+            def launch():
+                env = dict(os.environ)
+                env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
+                # Keep hf's working cache (Xet chunk cache HF_XET_CACHE=$HF_HOME/xet,
+                # etc.) on the target store's volume — not the process home — so it
+                # doesn't bloat / fill another filesystem and stays with the data.
+                # (We pass the token explicitly, so HF_HOME isn't used for auth.)
+                env["HF_HOME"] = str(Path(st["path"]) / ".hf")
+                # NOTE: do NOT disable Xet here (see AGENTS.md). Xet is the fast default
+                # transfer. Progress is synced from hf's tqdm bytes bar; on the classic
+                # path .incomplete files also let read_progress reflect bytes-on-disk.
+                return subprocess.Popen(
+                    [sys.executable, "-m", "hugger._dlworker", job.repo_id, job.revision, str(dest)],
+                    env=env,
+                )
+
+            proc = launch()
             job._proc = proc
+            job._last_progress_t = time.monotonic()
             while proc.poll() is None:
                 if self._shutting_down:
                     return  # shutdown() persisted us as queued; resume on restart
+                if job._preempt.is_set():
+                    # "Run now" demoted us so another job can take the slot — stop and
+                    # go back to 'queued' (the resumable partial is on disk).
+                    _terminate(proc)
+                    job.status = "queued"; job.persist(); return
                 if job._stop.is_set():
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
+                    _terminate(proc)
                     job.status = "paused"; job.persist(); return
+                if STALE_SECS and time.monotonic() - job._last_progress_t > STALE_SECS:
+                    # No bytes for too long: the transfer is wedged. Restart the
+                    # worker in place — it resumes from the bytes already on disk.
+                    job.stalls += 1
+                    _terminate(proc)
+                    proc = launch(); job._proc = proc
+                    job._last_progress_t = time.monotonic()
+                    job.persist()  # surface the stall count to the live panels
+                    continue
                 job._stop.wait(0.5)
             if self._shutting_down:
                 return
@@ -372,6 +503,8 @@ class JobManager:
                         except OSError:
                             pass
                 job.status = "done"; job.persist()
+            elif job._preempt.is_set():
+                job.status = "queued"; job.persist()
             elif job._stop.is_set():
                 job.status = "paused"; job.persist()
             elif rc is not None and rc < 0:
@@ -384,6 +517,8 @@ class JobManager:
             job.status = "error"; job.error = f"{type(e).__name__}: {e}"; job.persist()
         finally:
             poll_stop.set()
+            if not self._shutting_down:
+                self._schedule()  # a slot freed — start the next queued job
 
     def _run_move(self, job: Job) -> None:
         try:
@@ -409,6 +544,8 @@ class JobManager:
             job.total_bytes = sum(p.stat().st_size for p in files)
             done = 0
             for p in files:
+                if job._preempt.is_set():
+                    job.status = "queued"; job.persist(); return
                 if job._stop.is_set():
                     job.status = "paused"; job.persist(); return
                 out = dest / p.relative_to(src)
@@ -434,6 +571,9 @@ class JobManager:
             job.status = "done"; job.persist()
         except Exception as e:
             job.status = "error"; job.error = f"{type(e).__name__}: {e}"; job.persist()
+        finally:
+            if not self._shutting_down:
+                self._schedule()  # a slot freed — start the next queued job
 
     def _cache_archive(self, repo_id, meta, dest, store_id, fallback=None) -> None:
         if meta:

@@ -72,10 +72,17 @@ def _stream_one(group, rel: str, file_hash: str, expected: int, dest_dir: str | 
 
     written = have
     if have < expected:
+        # Flush to the OS every ~1 MB so the parent's progress poll (which reads
+        # this file's on-disk size) keeps advancing — an unflushed BufferedWriter
+        # makes an actively-transferring file look stalled for long stretches.
+        flushed = have
         with open(part, "ab") as f:
             for chunk in group.download_stream(XetFileInfo(file_hash, expected), start=have):
                 f.write(chunk)
                 written += len(chunk)
+                if written - flushed >= 1 << 20:
+                    f.flush()
+                    flushed = written
     if written != expected:
         raise RuntimeError(f"xet download size mismatch for {rel}: {written} != {expected}")
     part.replace(final)

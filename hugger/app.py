@@ -67,6 +67,23 @@ def human_size(n: int) -> str:
     return f"{f:.1f} TB"
 
 
+def human_rate(bytes_per_sec: float) -> str:
+    return f"{human_size(bytes_per_sec)}/s" if bytes_per_sec > 0 else ""
+
+
+def human_eta(seconds: int | None) -> str:
+    """Compact remaining-time, e.g. '45s', '3m 20s', '1h 4m'."""
+    if seconds is None or seconds < 0:
+        return ""
+    if seconds < 60:
+        return f"{seconds}s"
+    m, s = divmod(seconds, 60)
+    if m < 60:
+        return f"{m}m {s}s"
+    h, m = divmod(m, 60)
+    return f"{h}h {m}m"
+
+
 async def _ds_csrf_ok(req, sess) -> bool:
     """CSRF check for Datastar actions: the token rides as the `csrf` signal
     (sent in the JSON body for POST, the `datastar` query for GET)."""
@@ -435,18 +452,31 @@ def jobs_body(notice: str | None = None):
                 controls.append(ds_button("Edit files", f"@get('/ui/jobs/{j.id}/files')",
                                           indicator=_sig("e", j.id), busy="Opening…"))
             state = status_pill("paused")
+        elif j.status == "queued":
+            # Queued behind another job: let the user jump the queue or pause it.
+            controls.append(ds_button("Run now", f"@post('/ui/jobs/{j.id}/run-now')",
+                                       indicator=_sig("rn", j.id), busy="Starting…"))
+            controls.append(ds_button("Pause", f"@post('/ui/jobs/{j.id}/pause')",
+                                       indicator=ind, cls="ghost"))
+            state = status_pill("queued")
         else:
             controls.append(ds_button("Pause", f"@post('/ui/jobs/{j.id}/pause')",
                                        indicator=ind, cls="ghost"))
             state = status_pill(j.status)
+        # progress / rate / ETA / stall line
+        stats = [Span(f"{human_size(j.done_bytes)} / {human_size(j.total_bytes)}", cls="muted")]
+        if j.status == "running" and j.rate > 0:
+            stats.append(Span(f"· {human_rate(j.rate)}", cls="muted"))
+            if j.eta is not None:
+                stats.append(Span(f"· ETA {human_eta(j.eta)}", cls="muted"))
+        if j.stalls:
+            stats.append(Span(f"· restarted {j.stalls}×", cls="badge warn",
+                              title="auto-restarted after stalling"))
         items.append(
             Div(
                 Div(job_kind(j.type), Span(j.repo_id, cls="mono"), state, cls="row"),
                 Progress(value=str(j.done_bytes), max=str(max(j.total_bytes, 1))),
-                Div(
-                    Span(f"{human_size(j.done_bytes)} / {human_size(j.total_bytes)}", cls="muted"),
-                    *controls, cls="row",
-                ),
+                Div(*stats, *controls, cls="row"),
                 cls="job", id=f"job-{ind}",
             )
         )
@@ -456,11 +486,9 @@ def jobs_body(notice: str | None = None):
         else:
             items.append(Div(Span("✓ ", cls=""), Span(j.repo_id, cls="mono"), Span(f" {_job_verb(j)}d", cls="muted"), cls="job"))
     inner = items or [P("No active jobs.", cls="muted")]
-    if any(j.type == "download" and j.status in ("queued", "running") for j in active):
-        inner.append(P("ℹ︎ Download progress is reported by huggingface_hub: "
-                       "per-chunk on the classic path, in ~64 MB steps over Xet — "
-                       "so large files advance in jumps. (Set HF_HUB_DISABLE_XET=1 "
-                       "for finer steps.)", cls="muted"))
+    if jobs.MAX_ACTIVE == 1 and sum(1 for j in active if j.status in ("queued", "running")) > 1:
+        inner.append(P("ℹ︎ One job transfers at a time; the rest wait in the queue. "
+                       "Use “Run now” to jump the queue.", cls="muted"))
     if notice:
         inner = [P(notice, cls="err"), *inner]
     return Div(*inner, id="jobs-body")
@@ -845,6 +873,13 @@ async def ui_job_pause(req, sess, job_id: str):
 async def ui_job_resume(req, sess, job_id: str):
     if await _ds_csrf_ok(req, sess):
         jobs.manager.resume(job_id)
+    return patch(jobs_body())
+
+
+@rt("/ui/jobs/{job_id}/run-now", methods=["POST"])
+async def ui_job_run_now(req, sess, job_id: str):
+    if await _ds_csrf_ok(req, sess):
+        jobs.manager.run_now(job_id)
     return patch(jobs_body())
 
 
