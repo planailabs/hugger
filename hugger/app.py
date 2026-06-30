@@ -112,6 +112,16 @@ def reload_icon(size: int = 16):
     )
 
 
+# Verify icon: a shield with a check (integrity hashing).
+def verify_icon(size: int = 16):
+    return NotStr(
+        f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" '
+        'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" '
+        'aria-hidden="true" style="flex:none"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z">'
+        '</path><path d="m9 12 2 2 4-4"></path></svg>'
+    )
+
+
 def ds_button(label: str, action: str, *, indicator: str, busy: str | None = None,
               cls: str = "", icon=None, **kw):
     """Button that fires a Datastar action (e.g. "@post('/x')") with built-in busy
@@ -153,9 +163,11 @@ def status_pill(label: str):
 
 
 def job_kind(job_type: str):
-    """Inline job-kind indicator: download icon + label, or move."""
+    """Inline job-kind indicator: icon + label per job type."""
     if job_type == "move":
         return Span("⇄ move", cls="muted kind")
+    if job_type == "verify":
+        return Span(verify_icon(14), "verify", cls="muted kind")
     return Span(dl_icon(14), "download", cls="muted kind")
 
 
@@ -432,7 +444,13 @@ def search_results(models: list[dict], query: str = ""):
 
 
 def _job_verb(j) -> str:
-    return "move" if j.type == "move" else "download"
+    """Present-tense action, for '<verb> failed'."""
+    return {"move": "move", "verify": "verify"}.get(j.type, "download")
+
+
+def _job_done_word(j) -> str:
+    """Past tense, for a finished job."""
+    return {"move": "moved", "verify": "verified"}.get(j.type, "downloaded")
 
 
 def jobs_body(notice: str | None = None):
@@ -484,7 +502,7 @@ def jobs_body(notice: str | None = None):
         if j.status == "error":
             items.append(Div(Span(j.repo_id, cls="mono"), Span(f" {_job_verb(j)} failed: ", cls="err"), Span(j.error or "", cls="err"), cls="job"))
         else:
-            items.append(Div(Span("✓ ", cls=""), Span(j.repo_id, cls="mono"), Span(f" {_job_verb(j)}d", cls="muted"), cls="job"))
+            items.append(Div(Span("✓ ", cls=""), Span(j.repo_id, cls="mono"), Span(f" {_job_done_word(j)}", cls="muted"), cls="job"))
     inner = items or [P("No active jobs.", cls="muted")]
     if jobs.MAX_ACTIVE == 1 and sum(1 for j in active if j.status in ("queued", "running")) > 1:
         inner.append(P("ℹ︎ One job transfers at a time; the rest wait in the queue. "
@@ -948,7 +966,10 @@ def manage_page(req, sess, repo_id: str):
         P("Store: ", Span(rec.get("store_name") or "—", cls="mono"),
           " · ", Span(f"{rec['n_downloaded']}/{rec['n_files']} files", cls="muted"),
           " · ", Span(human_size(rec["size_bytes"]), cls="muted")),
-        Div(Span("Move to another store: ", cls="muted"), move, cls="row"),
+        Div(Span("Move to another store: ", cls="muted"), move,
+            ds_button("Verify", f"@post('/ui/verify/{repo_id}')", indicator=_sig("vf", repo_id),
+                      busy="Verifying…", cls="ghost", icon=verify_icon()),
+            cls="row"),
         cls="card",
     )
     return page(
@@ -982,6 +1003,16 @@ async def ui_file_remove(req, sess, repo_id: str):
         if path:
             jobs.manager.remove_file(repo_id, path)
     return patch(manage_list_fragment(repo_id))
+
+
+@rt("/ui/verify/{repo_id:path}", methods=["POST"])
+async def ui_verify(req, sess, repo_id: str):
+    if await _ds_csrf_ok(req, sess):
+        try:
+            jobs.manager.start_verify(repo_id)
+        except KeyError:
+            pass
+    return patch(jobs_body())
 
 
 def _update_modal(repo_id: str, notice: str | None = None):

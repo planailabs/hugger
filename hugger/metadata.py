@@ -13,6 +13,7 @@ from pathlib import Path
 
 META_NAME = ".hugger.json"
 PROGRESS_NAME = ".hugger.progress"
+VERIFY_NAME = ".hugger.verify"
 
 
 def meta_path(model_dir: Path | str) -> Path:
@@ -21,6 +22,26 @@ def meta_path(model_dir: Path | str) -> Path:
 
 def progress_file(model_dir: Path | str) -> Path:
     return Path(model_dir) / PROGRESS_NAME
+
+
+def verify_file(model_dir: Path | str) -> Path:
+    return Path(model_dir) / VERIFY_NAME
+
+
+def read_verify(model_dir: Path | str) -> dict:
+    """Resume state for a verify job: which files passed/failed hashing and how
+    many bytes are done. Empty dict if none / unreadable."""
+    try:
+        return json.loads(verify_file(model_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def write_verify(model_dir: Path | str, state: dict) -> None:
+    try:
+        verify_file(model_dir).write_text(json.dumps(state), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def read_progress(model_dir: Path | str, meta: dict, base: int = 0) -> int:

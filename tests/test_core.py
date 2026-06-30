@@ -489,6 +489,83 @@ def test_run_now_preempts_running_job():
         store.delete_finished_jobs()
 
 
+def _seed_verifiable(repo: str, good: bool = True):
+    """A model dir with two files + metadata whose rhash matches (or not)."""
+    a = store.get_default_store()["id"]
+    mdir = jobs.store_repo_path(store.get_store(a)["path"], repo)
+    (mdir).mkdir(parents=True, exist_ok=True)
+    (mdir / "a.bin").write_bytes(b"alpha")
+    (mdir / "b.bin").write_bytes(b"bravo")
+    rh = lambda n: util.gitblob_sha1(mdir / n)
+    files = [{"path": "a.bin", "size": 5, "lfs": False, "rhash": rh("a.bin")},
+             {"path": "b.bin", "size": 5, "lfs": False, "rhash": "deadbeef" if not good else rh("b.bin")}]
+    meta = metadata.build(repo, "main", "s", files, None)
+    metadata.write(mdir, meta)
+    store.upsert_archive(repo, "main", "s", str(mdir), 10, a, total_bytes=10,
+                         n_files=2, n_downloaded=2, complete=1)
+    return a, mdir
+
+
+def test_verify_job_passes_clean_model():
+    repo = "org/verify-ok"
+    a, mdir = _seed_verifiable(repo, good=True)
+    job = jobs.Job(id="vf-ok", repo_id=repo, type="verify", store_id=a, total_bytes=10)
+    jobs.manager._jobs[job.id] = job
+    try:
+        jobs.manager._run_verify(job)
+        assert job.status == "done", job.error
+        assert job.done_bytes == 10
+        assert not metadata.verify_file(mdir).exists()  # progress file cleaned up
+    finally:
+        jobs.manager._jobs.pop(job.id, None)
+        store.delete_archive_and_hashes(repo)
+
+
+def test_verify_job_flags_corrupt_file():
+    repo = "org/verify-bad"
+    a, mdir = _seed_verifiable(repo, good=False)
+    job = jobs.Job(id="vf-bad", repo_id=repo, type="verify", store_id=a, total_bytes=10)
+    jobs.manager._jobs[job.id] = job
+    try:
+        jobs.manager._run_verify(job)
+        assert job.status == "error" and "b.bin" in (job.error or "")
+    finally:
+        jobs.manager._jobs.pop(job.id, None)
+        store.delete_archive_and_hashes(repo)
+
+
+def test_verify_resumes_skipping_done_files():
+    """A pre-existing `.hugger.verify` marks a.bin done; the verify must skip it
+    (so even a now-wrong a.bin passes) and only hash the rest."""
+    repo = "org/verify-resume"
+    a, mdir = _seed_verifiable(repo, good=True)
+    metadata.write_verify(mdir, {"ok": ["a.bin"], "bad": [], "done_bytes": 5})
+    (mdir / "a.bin").write_bytes(b"XXXXX")  # corrupt it — but it's already 'ok', skipped
+    job = jobs.Job(id="vf-res", repo_id=repo, type="verify", store_id=a, total_bytes=10)
+    jobs.manager._jobs[job.id] = job
+    try:
+        jobs.manager._run_verify(job)
+        assert job.status == "done", job.error  # a.bin skipped, b.bin good
+    finally:
+        jobs.manager._jobs.pop(job.id, None)
+        store.delete_archive_and_hashes(repo)
+
+
+def test_verify_runs_in_separate_lane():
+    """A verify job and a transfer job run at once (independent lanes)."""
+    mgr, a = _scheduler_fixture()
+    om, ov = jobs.MAX_ACTIVE, jobs.MAX_VERIFY
+    jobs.MAX_ACTIVE = jobs.MAX_VERIFY = 1
+    try:
+        dl = jobs.Job(id="ln-dl", repo_id="o/a", type="download", store_id=a, total_bytes=10)
+        vf = jobs.Job(id="ln-vf", repo_id="o/b", type="verify", store_id=a, total_bytes=10)
+        mgr._register(dl); mgr._register(vf)
+        assert dl.status == "running" and vf.status == "running"  # both lanes active
+    finally:
+        jobs.MAX_ACTIVE, jobs.MAX_VERIFY = om, ov
+        store.delete_finished_jobs()
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

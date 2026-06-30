@@ -10,28 +10,38 @@ from pathlib import Path
 _CHUNK = 1024 * 1024
 
 
-def sha256_file(path: Path | str) -> str:
-    h = hashlib.sha256()
+class HashAborted(Exception):
+    """Raised by hash_file when its `stop()` callback returns True mid-file."""
+
+
+def hash_file(path: Path | str, algo: str, on_bytes=None, stop=None) -> str:
+    """Hash a file. `algo`: 'sha256' (LFS) or 'gitblob' (git blob SHA-1, matches
+    the Hub's blob_id for non-LFS files: sha1(b"blob <size>\\0" + content)).
+
+    `on_bytes(n)` is called with each chunk's length for byte-level progress;
+    `stop()` is polled between chunks and raises HashAborted if it returns True,
+    so a long hash can be cancelled (pause/preempt) promptly."""
+    if algo == "sha256":
+        h = hashlib.sha256()
+    else:
+        h = hashlib.sha1()
+        h.update(f"blob {os.path.getsize(path)}\0".encode())
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(_CHUNK), b""):
+            if stop is not None and stop():
+                raise HashAborted()
             h.update(chunk)
+            if on_bytes is not None:
+                on_bytes(len(chunk))
     return h.hexdigest()
+
+
+def sha256_file(path: Path | str) -> str:
+    return hash_file(path, "sha256")
 
 
 def gitblob_sha1(path: Path | str) -> str:
-    """Git blob SHA-1 (matches the Hub's blob_id for non-LFS files):
-    sha1(b"blob <size>\\0" + content)."""
-    size = os.path.getsize(path)
-    h = hashlib.sha1()
-    h.update(f"blob {size}\0".encode())
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(_CHUNK), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def hash_file(path: Path | str, algo: str) -> str:
-    return sha256_file(path) if algo == "sha256" else gitblob_sha1(path)
+    return hash_file(path, "gitblob")
 
 
 def dir_size(path: Path | str) -> int:

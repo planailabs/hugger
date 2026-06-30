@@ -35,9 +35,12 @@ def _int_env(name: str, default: int, lo: int = 0) -> int:
         return default
 
 
-# How many jobs may actively transfer at once; the rest wait as "queued" and are
-# started by the scheduler as slots free. 1 = serial downloads (default).
+# How many transfer jobs (download/move) may run at once; the rest wait as
+# "queued" and start as slots free. 1 = serial downloads (default).
 MAX_ACTIVE = _int_env("HUGGER_MAX_ACTIVE", 1, lo=1)
+# Verify jobs run in a SEPARATE lane so hashing a finished model doesn't block
+# the next download — one verify can run adjacent to one transfer.
+MAX_VERIFY = _int_env("HUGGER_MAX_VERIFY", 1, lo=1)
 # A running download making no progress for this many seconds is considered
 # stalled and its worker is restarted in place (0 disables).
 STALE_SECS = float(os.environ.get("HUGGER_STALE_SECS", "90") or 0)
@@ -55,6 +58,11 @@ class Busy(Exception):
 
 def store_repo_path(store_path: str, repo_id: str) -> Path:
     return Path(store_path).joinpath(*repo_id.split("/"))
+
+
+def _lane(job_type: str) -> str:
+    """Scheduling lane: verify jobs run independently of transfers."""
+    return "verify" if job_type == "verify" else "transfer"
 
 
 def _terminate(proc: subprocess.Popen | None) -> None:
@@ -199,6 +207,34 @@ class JobManager:
                 return j
         return None
 
+    def _active_verify_for(self, repo_id: str) -> Job | None:
+        for j in self._jobs.values():
+            if j.type == "verify" and j.repo_id == repo_id and j.status in ("queued", "running", "paused"):
+                return j
+        return None
+
+    def start_verify(self, repo_id: str) -> Job:
+        """Queue a job that hashes the model's downloaded files and checks them
+        against the expected hashes. Runs in the verify lane (adjacent to a
+        transfer). Returns the existing verify job if one is already active."""
+        existing = self._active_verify_for(repo_id)
+        if existing:
+            return existing
+        rec = store.get_archive(repo_id)
+        if not rec:
+            raise KeyError(repo_id)
+        model_dir = Path(rec["path"])
+        meta = metadata.read(model_dir)
+        total = 0
+        if meta:
+            for f in meta.get("files", []):
+                if metadata.file_downloaded(model_dir, f["path"], f.get("size")):
+                    total += f.get("size", 0) or 0
+        job = Job(id=uuid.uuid4().hex[:12], repo_id=repo_id, revision=rec["revision"],
+                  type="verify", store_id=rec["store_id"], total_bytes=total, sha=rec["sha"])
+        self._register(job)
+        return job
+
     def active_download_files(self, repo_id: str) -> set[str]:
         """Files a queued/running download for `repo_id` is fetching (from its
         metadata's selection) — used to mark them 'downloading' and lock them."""
@@ -242,30 +278,34 @@ class JobManager:
         self._schedule()
 
     def _schedule(self) -> None:
-        """Start queued jobs (in priority order) until MAX_ACTIVE are running.
-        Called whenever a slot might have freed (registration, pause, finish)."""
+        """Start queued jobs (in priority order) until each lane is full: up to
+        MAX_ACTIVE transfers and MAX_VERIFY verifies, counted independently so a
+        verify can run adjacent to a transfer. Called whenever a slot may free."""
         if self._shutting_down:
             return
         to_start: list[Job] = []
         with self._lock:
-            running = sum(1 for j in self._jobs.values() if j.status == "running")
-            slots = MAX_ACTIVE - running
+            slots = {"transfer": MAX_ACTIVE, "verify": MAX_VERIFY}
+            for j in self._jobs.values():
+                if j.status == "running":
+                    slots[_lane(j.type)] -= 1
             for jid in self._order:
-                if slots <= 0:
+                if all(s <= 0 for s in slots.values()):
                     break
                 j = self._jobs.get(jid)
-                if j and j.status == "queued":
+                if j and j.status == "queued" and slots[_lane(j.type)] > 0:
                     j.status = "running"  # claim the slot now so we don't double-pick
                     j._stop = threading.Event()
                     j._preempt = threading.Event()
                     to_start.append(j)
-                    slots -= 1
+                    slots[_lane(j.type)] -= 1
         for j in to_start:
             j.persist()
             self._spawn(j)
 
     def _spawn(self, job: Job) -> None:
-        target = self._run_download if job.type == "download" else self._run_move
+        target = {"download": self._run_download, "move": self._run_move,
+                  "verify": self._run_verify}[job.type]
         threading.Thread(target=target, args=(job,), daemon=True).start()
 
     # --- pause / resume / prioritise -------------------------------------
@@ -301,12 +341,16 @@ class JobManager:
         if not job or job.status != "queued":
             return
         victim: Job | None = None
+        lane = _lane(job.type)
+        cap = MAX_VERIFY if lane == "verify" else MAX_ACTIVE
         with self._lock:
             if job_id in self._order:
                 self._order.remove(job_id)
             self._order.insert(0, job_id)
-            running = [j for j in self._jobs.values() if j.status == "running"]
-            if len(running) >= MAX_ACTIVE and running:
+            # only the SAME lane competes for the slot we want
+            running = [j for j in self._jobs.values()
+                       if j.status == "running" and _lane(j.type) == lane]
+            if len(running) >= cap and running:
                 # demote the running job that's furthest from done (least lost work)
                 victim = min(running, key=lambda j: j.percent)
         if victim is not None:
@@ -494,15 +538,14 @@ class JobManager:
                 self._cache_archive(job.repo_id, meta, dest, job.store_id)
                 state = metadata.state(dest, meta)
                 job.done_bytes = state["downloaded_bytes"]
-                # Cache hashes of the freshly downloaded files so later update
-                # verification is cheap (best-effort).
-                for f in meta.get("files", []):
-                    if metadata.file_downloaded(dest, f["path"], f.get("size")):
-                        try:
-                            self.local_hash(job.repo_id, f["path"], dest, metadata.algo_for(f))
-                        except OSError:
-                            pass
                 job.status = "done"; job.persist()
+                # Hash the model in a separate verify job (adjacent lane) so this
+                # download's slot frees immediately for the next one and the
+                # integrity hashing doesn't block it. Best-effort.
+                try:
+                    self.start_verify(job.repo_id)
+                except Exception:
+                    pass
             elif job._preempt.is_set():
                 job.status = "queued"; job.persist()
             elif job._stop.is_set():
@@ -574,6 +617,93 @@ class JobManager:
         finally:
             if not self._shutting_down:
                 self._schedule()  # a slot freed — start the next queued job
+
+    def _run_verify(self, job: Job) -> None:
+        """Hash each downloaded file and check it against the expected hash. Runs
+        in the verify lane. Resumable: `.hugger.verify` records which files have
+        passed/failed so an aborted run skips them and continues."""
+        try:
+            if job._stop.is_set():
+                job.status = "paused"; job.persist(); return
+            job.status = "running"; job.persist()
+            rec = store.get_archive(job.repo_id)
+            if not rec:
+                raise KeyError(job.repo_id)
+            model_dir = Path(rec["path"])
+            meta = metadata.read(model_dir)
+            if not meta:
+                raise RuntimeError("no metadata to verify against")
+
+            st = metadata.read_verify(model_dir)
+            ok_set = set(st.get("ok", []))
+            bad = list(st.get("bad", []))
+            base = int(st.get("done_bytes", 0) or 0)
+            job.total_bytes = job.total_bytes or meta.get("total_size", 0)
+            job.done_bytes = base
+            job.persist()
+
+            last_save = [time.monotonic()]
+
+            def save(force=False):
+                now = time.monotonic()
+                if force or now - last_save[0] >= 1.0:
+                    last_save[0] = now
+                    metadata.write_verify(model_dir, {"ok": sorted(ok_set), "bad": bad,
+                                                      "done_bytes": base})
+                    _live.bump()
+
+            for f in meta.get("files", []):
+                rel = f["path"]
+                if rel in ok_set or rel in bad:
+                    continue
+                if self._shutting_down:
+                    save(force=True); return
+                if job._preempt.is_set():
+                    save(force=True); job.status = "queued"; job.persist(); return
+                if job._stop.is_set():
+                    save(force=True); job.status = "paused"; job.persist(); return
+                size = f.get("size", 0) or 0
+                if not metadata.file_downloaded(model_dir, rel, f.get("size")):
+                    continue  # only verify what's actually downloaded
+                algo = metadata.algo_for(f)
+                acc = [base]  # base + bytes hashed so far in this file
+
+                def on_bytes(n):
+                    acc[0] += n
+                    job.done_bytes = acc[0]
+
+                try:
+                    h = util.hash_file(model_dir / rel, algo, on_bytes=on_bytes,
+                                       stop=lambda: job._stop.is_set() or job._preempt.is_set())
+                except util.HashAborted:
+                    save(force=True)
+                    job.status = "queued" if job._preempt.is_set() else "paused"
+                    job.persist(); return
+                except OSError:
+                    bad.append(rel); save(force=True); continue
+                store.set_file_hash(job.repo_id, rel, size,
+                                    (model_dir / rel).stat().st_mtime, algo, h)
+                if f.get("rhash") and h != f["rhash"]:
+                    bad.append(rel)
+                else:
+                    ok_set.add(rel)
+                base += size
+                job.done_bytes = base
+                save()
+
+            metadata.verify_file(model_dir).unlink(missing_ok=True)
+            if bad:
+                job.status = "error"
+                job.error = f"{len(bad)} file(s) failed verification: " + ", ".join(bad[:3]) + (
+                    " …" if len(bad) > 3 else "")
+            else:
+                job.status = "done"
+            job.persist()
+        except Exception as e:
+            job.status = "error"; job.error = f"{type(e).__name__}: {e}"; job.persist()
+        finally:
+            if not self._shutting_down:
+                self._schedule()  # verify lane freed — start the next queued job
 
     def _cache_archive(self, repo_id, meta, dest, store_id, fallback=None) -> None:
         if meta:
