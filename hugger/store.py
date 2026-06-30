@@ -65,7 +65,7 @@ def upsert_archive(repo_id: str, revision: str, sha: str, path: str,
                VALUES (?,?,?,?,?,?,?,0,?,?,?,?,?,?)
                ON CONFLICT(repo_id) DO UPDATE SET
                  revision=excluded.revision, sha=excluded.sha, path=excluded.path,
-                 size_bytes=excluded.size_bytes, archived_at=excluded.archived_at,
+                 size_bytes=excluded.size_bytes,
                  last_checked=excluded.last_checked, update_available=0,
                  remote_sha=excluded.remote_sha, store_id=excluded.store_id,
                  total_bytes=excluded.total_bytes, n_files=excluded.n_files,

@@ -164,6 +164,16 @@ def info_icon(size: int = 16):
     )
 
 
+# Plus icon: a plus in a circle (an archive added).
+def plus_icon(size: int = 16):
+    return NotStr(
+        f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" '
+        'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" '
+        'aria-hidden="true" style="flex:none"><circle cx="12" cy="12" r="10"></circle>'
+        '<line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>'
+    )
+
+
 def ds_button(label: str, action: str, *, indicator: str, busy: str | None = None,
               cls: str = "", icon=None, **kw):
     """Button that fires a Datastar action (e.g. "@post('/x')") with built-in busy
@@ -216,6 +226,31 @@ def job_kind(job_type: str):
     kind of work is obvious at a glance."""
     label, icon, cls = _KIND.get(job_type, _KIND["download"])
     return Span(icon(13), label, cls=f"kind {cls}")
+
+
+# Activity event -> (past-tense label, icon, chip class).
+_EVENT = {
+    "added": ("added", plus_icon, "kind-add"),
+    "download": ("downloaded", dl_icon, "kind-dl"),
+    "verify": ("verified", verify_icon, "kind-vf"),
+    "move": ("moved", move_icon, "kind-mv"),
+}
+
+
+def event_chip(kind: str):
+    label, icon, cls = _EVENT.get(kind, _EVENT["download"])
+    return Span(icon(13), label, cls=f"kind {cls}")
+
+
+def recent_activity(limit: int = 10) -> list[dict]:
+    """Last `limit` activity events, newest first: archive 'added' events
+    (archived_at) intertwined with completed job events (download/verify/move)."""
+    events = [{"t": a["archived_at"], "kind": "added", "repo": a["repo_id"]}
+              for a in store.list_archives()]
+    events += [{"t": j["updated_at"], "kind": j["type"], "repo": j["repo_id"]}
+               for j in store.recent_jobs(limit=50) if j["status"] == "done"]
+    events.sort(key=lambda e: e["t"] or "", reverse=True)
+    return events[:limit]
 
 
 # --- reusable Datastar components ----------------------------------------
@@ -651,18 +686,21 @@ def summary_fragment():
            Span(" update(s) available", cls="muted")] if updates else []),
         cls="row",
     )
-    if archives:
-        recent = [
-            Li(
-                A(a["repo_id"], href=f"https://huggingface.co/{a['repo_id']}",
-                  target="_blank", cls="link mono"),
-                Span(f" · {human_size(a['size_bytes'])} ", cls="muted"),
-                (status_pill("update available") if a["update_available"] else ""),
-                cls="row",
+    events = recent_activity(10)
+    if events:
+        rows = [
+            Tr(
+                Td((e["t"] or "")[:16].replace("T", " "), cls="muted mono"),
+                Td(event_chip(e["kind"])),
+                Td(A(e["repo"], href=f"https://huggingface.co/{e['repo']}",
+                     target="_blank", cls="link mono wrap")),
             )
-            for a in archives[:5]
+            for e in events
         ]
-        recent_list = Ul(*recent)
+        recent_list = Table(
+            Thead(Tr(Th("When (UTC)"), Th("Event"), Th("Model"))),
+            Tbody(*rows),
+        )
     else:
         recent_list = P("Nothing archived yet. Search above or use the browser extension.", cls="muted")
 

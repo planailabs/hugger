@@ -45,6 +45,7 @@
   .kind-dl { background: theme(colors.infobg); color: theme(colors.infofg); }
   .kind-vf { background: #EDE7FB; color: #5B3FA8; }
   .kind-mv { background: theme(colors.warnbg); color: theme(colors.accentink); }
+  .kind-add { background: theme(colors.okbg); color: theme(colors.okfg); }
   .ok-check { @apply inline-flex items-center text-okfg; }
   p.note { @apply flex items-center gap-1.5; }
   .fcheck { @apply flex items-center gap-[11px] cursor-pointer; }
