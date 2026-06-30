@@ -1,21 +1,35 @@
 """Resumable Xet downloads.
 
-huggingface_hub's high-level download writes a whole Xet file in one shot (no
-partial-on-disk, no resume). hf_xet does expose a lower-level byte-range stream
-(`XetDownloadStreamGroup.download_stream(file_info, start=N)`); we drive it
-directly so a Xet file resumes from the bytes already on disk.
+huggingface_hub's high-level download has no Xet resume: an interrupted file is
+re-fetched from scratch, and its on-disk chunk cache does NOT retain data chunks
+across runs (it's ~tens of KB even after a multi-MB download — shard/CAS metadata,
+not file data). So we drive hf_xet's lower-level byte-range stream
+(`XetDownloadStreamGroup.download_stream(file_info, start=N)`) ourselves and write
+to `<file>.xetpart`, renaming on completion — giving true byte-level resume from
+the bytes already on disk, independent of any cache.
 
-Bytes are written to `<file>.xetpart` and renamed to the final name on
-completion, so an interrupted/paused download continues where it stopped. Files
-that aren't Xet-backed return False so the caller falls back to the classic path.
+Why it used to "go stale" on big repos, and how this avoids it:
+  * The old code created ONE stream group and reused it for the whole (multi-hour)
+    download; once its short-lived CAS token expired mid-stream the iterator
+    blocked forever. We now use a SHORT-LIVED group per file (recreated on each
+    retry), so a token only has to outlive a single file/attempt.
+  * A read-timeout watchdog (`_iter_timeout`) turns a wedged stream into an error
+    instead of an infinite hang, and `_stream_resilient` retries with a fresh
+    group, resuming from the current `.xetpart` size — so even a single huge file
+    that outlives a token recovers on its own.
 
-Disable with HUGGER_XET_RESUME=0 (then the classic snapshot_download path is used,
-which resumes LFS files but not Xet).
+Files that aren't Xet-backed return to the caller for the classic path.
+Disable with HUGGER_XET_RESUME=0 (classic snapshot_download path; resumes LFS but
+not Xet).
 """
 from __future__ import annotations
 
 import concurrent.futures
 import os
+import queue
+import sys
+import threading
+import time
 from pathlib import Path
 
 PART_SUFFIX = ".xetpart"
@@ -23,13 +37,64 @@ PART_SUFFIX = ".xetpart"
 _available: bool | None = None
 
 
-def _concurrency() -> int:
-    """How many files to stream through the group at once (HUGGER_XET_CONCURRENCY,
-    default 8). The shared chunk cache still dedups across the concurrent files."""
+def _int_env(name: str, default: int, lo: int = 0) -> int:
     try:
-        return max(1, int(os.environ.get("HUGGER_XET_CONCURRENCY", "8")))
+        return max(lo, int(os.environ.get(name, str(default))))
     except ValueError:
-        return 8
+        return default
+
+
+def _concurrency() -> int:
+    """How many files to stream concurrently (HUGGER_XET_CONCURRENCY, default 8)."""
+    return _int_env("HUGGER_XET_CONCURRENCY", 8, lo=1)
+
+
+def _read_timeout() -> int:
+    """Abort a file's stream if no bytes arrive for this long (seconds), so a
+    wedged CAS connection — the usual cause of a download going 'stale' on a big
+    repo once its token expires mid-stream — fails fast and is retried instead of
+    blocking forever. HUGGER_XET_READ_TIMEOUT, default 60; 0 disables."""
+    return _int_env("HUGGER_XET_READ_TIMEOUT", 60, lo=0)
+
+
+def _retries() -> int:
+    """Per-file retry budget on a transient failure (timeout / dropped connection
+    / expired token). HUGGER_XET_RETRIES, default 6."""
+    return _int_env("HUGGER_XET_RETRIES", 6, lo=0)
+
+
+_SENTINEL = object()
+
+
+def _iter_timeout(gen, timeout: int):
+    """Yield from a blocking generator, raising TimeoutError if no item arrives
+    within `timeout` seconds. The producer runs in a daemon thread; on timeout we
+    abandon it (it's blocked on a dead socket and dies with the process) and let
+    the caller retry with a fresh group, resuming from bytes already on disk."""
+    if not timeout:
+        yield from gen
+        return
+    q: queue.Queue = queue.Queue(maxsize=16)  # bounded -> backpressure, no runaway readahead
+
+    def produce():
+        try:
+            for item in gen:
+                q.put(item)
+            q.put(_SENTINEL)
+        except BaseException as e:  # surface producer errors to the consumer
+            q.put(e)
+
+    threading.Thread(target=produce, daemon=True).start()
+    while True:
+        try:
+            item = q.get(timeout=timeout)
+        except queue.Empty:
+            raise TimeoutError(f"no data for {timeout}s (stream wedged)")
+        if item is _SENTINEL:
+            return
+        if isinstance(item, BaseException):
+            raise item
+        yield item
 
 
 def available() -> bool:
@@ -53,10 +118,19 @@ def enabled() -> bool:
     return os.environ.get("HUGGER_XET_RESUME", "1") != "0" and available()
 
 
+def _new_group(refresh_route: str, headers: dict):
+    from huggingface_hub.utils._xet import get_xet_session, xet_headers_without_auth
+    return get_xet_session().new_download_stream_group(
+        token_refresh_url=refresh_route,
+        token_refresh_headers=headers,
+        custom_headers=xet_headers_without_auth(headers),
+    )
+
+
 def _stream_one(group, rel: str, file_hash: str, expected: int, dest_dir: str | Path) -> None:
-    """Stream one Xet file through an existing group into `<rel>.xetpart`,
-    resuming from its current size, then rename to the final name. Raises on a
-    size mismatch (the partial is left on disk for the next attempt)."""
+    """Stream one Xet file through `group` into `<rel>.xetpart`, resuming from its
+    current size, then rename to the final name. Raises on a size mismatch (the
+    partial is left on disk for the next attempt)."""
     from hf_xet import XetFileInfo
 
     final = Path(dest_dir) / rel
@@ -76,8 +150,9 @@ def _stream_one(group, rel: str, file_hash: str, expected: int, dest_dir: str | 
         # this file's on-disk size) keeps advancing — an unflushed BufferedWriter
         # makes an actively-transferring file look stalled for long stretches.
         flushed = have
+        stream = group.download_stream(XetFileInfo(file_hash, expected), start=have)
         with open(part, "ab") as f:
-            for chunk in group.download_stream(XetFileInfo(file_hash, expected), start=have):
+            for chunk in _iter_timeout(stream, _read_timeout()):
                 f.write(chunk)
                 written += len(chunk)
                 if written - flushed >= 1 << 20:
@@ -88,52 +163,61 @@ def _stream_one(group, rel: str, file_hash: str, expected: int, dest_dir: str | 
     part.replace(final)
 
 
-def _new_group(refresh_route: str, headers: dict):
-    from huggingface_hub.utils._xet import get_xet_session, xet_headers_without_auth
-    return get_xet_session().new_download_stream_group(
-        token_refresh_url=refresh_route,
-        token_refresh_headers=headers,
-        custom_headers=xet_headers_without_auth(headers),
-    )
+def _stream_resilient(make_group, rel: str, file_hash: str, expected: int,
+                      dest_dir: str | Path) -> None:
+    """Stream one file, retrying on transient failure (timeout / dropped CAS
+    connection / expired token) with a FRESH group each attempt and resuming from
+    the bytes already in `.xetpart`. A short-lived per-file group avoids the
+    multi-hour token expiry that wedges a single long-lived shared group."""
+    attempts = _retries() + 1
+    for i in range(attempts):
+        try:
+            _stream_one(make_group(), rel, file_hash, expected, dest_dir)
+            return
+        except Exception as e:
+            if i == attempts - 1:
+                raise
+            wait = min(2 ** i, 30)
+            print(f"[xet] {rel}: {type(e).__name__}: {e} — retry {i + 1}/{attempts - 1} "
+                  f"in {wait}s (resuming from disk)", file=sys.stderr, flush=True)
+            time.sleep(wait)
 
 
 def download_all(repo_id: str, revision: str, rels: list[str], dest_dir: str | Path,
                  token: str | None) -> list[str]:
-    """Download `rels` into `dest_dir`. Xet-backed files all stream through ONE
-    shared group, so the CAS connection, token lifecycle, and content-addressed
-    chunk cache are reused across files (chunks shared between files — e.g. across
-    shards — are fetched once); each file still resumes from its `.xetpart`.
-    Returns the rels that are NOT Xet-backed, for the caller to fetch classically."""
+    """Download `rels` into `dest_dir`. Each Xet-backed file streams through its
+    OWN short-lived group (recreated per attempt), concurrently across files. Each
+    file resumes from its `.xetpart`. Returns the rels that are NOT Xet-backed,
+    for the caller to fetch classically."""
     from huggingface_hub import get_hf_file_metadata, hf_hub_url
     from huggingface_hub.utils import build_hf_headers
 
     headers = build_hf_headers(token=token)
-    xet_items: list[tuple[str, str, int]] = []  # (rel, file_hash, size)
+    xet_items: list[tuple[str, str, int, str]] = []  # (rel, file_hash, size, refresh_route)
     classic: list[str] = []
-    refresh_route: str | None = None
     for rel in rels:
         meta = get_hf_file_metadata(hf_hub_url(repo_id, filename=rel, revision=revision), headers=headers)
         xfd = getattr(meta, "xet_file_data", None)
         if xfd is None:
             classic.append(rel)
         else:
-            xet_items.append((rel, xfd.file_hash, meta.size))
-            refresh_route = xfd.refresh_route  # shared per repo+revision
+            xet_items.append((rel, xfd.file_hash, meta.size, xfd.refresh_route))
 
     if xet_items:
-        group = _new_group(refresh_route, headers)
+        def task(rel, file_hash, size, refresh_route):
+            _stream_resilient(lambda: _new_group(refresh_route, headers),
+                              rel, file_hash, size, dest_dir)
+
         workers = min(_concurrency(), len(xet_items))
         if workers <= 1:
-            for rel, file_hash, size in xet_items:
-                _stream_one(group, rel, file_hash, size, dest_dir)
+            for item in xet_items:
+                task(*item)
         else:
-            # Stream files concurrently through the one group; download_stream
-            # releases the GIL for the network/CAS work, so this overlaps real
-            # transfer. A failed file leaves its `.xetpart` for the next attempt;
-            # we let the others finish, then surface the first error.
+            # download_stream releases the GIL for the network/CAS work, so files
+            # overlap real transfer. A failed file leaves its `.xetpart` for the
+            # next run; we let the others finish, then surface the first error.
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-                futs = {ex.submit(_stream_one, group, rel, file_hash, size, dest_dir): rel
-                        for rel, file_hash, size in xet_items}
+                futs = {ex.submit(task, *item): item[0] for item in xet_items}
                 errors = [(futs[f], f.exception())
                           for f in concurrent.futures.as_completed(futs) if f.exception()]
             if errors:
@@ -154,5 +238,6 @@ def download_file(repo_id: str, revision: str, rel: str, dest_dir: str | Path,
     xfd = getattr(meta, "xet_file_data", None)
     if xfd is None:
         return False  # not a Xet file — fall back to the classic download
-    _stream_one(_new_group(xfd.refresh_route, headers), rel, xfd.file_hash, meta.size, dest_dir)
+    _stream_resilient(lambda: _new_group(xfd.refresh_route, headers),
+                      rel, xfd.file_hash, meta.size, dest_dir)
     return True

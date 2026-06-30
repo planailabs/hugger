@@ -1,10 +1,13 @@
 """Live tests for resumable Xet downloads against the real Hub.
 
-Exercises hugger._xet_download against a real Xet-backed file: a full download
-matches the classic path byte-for-byte, an interrupted download resumes from the
-on-disk `.xetpart`, raw byte-ranges are exact, the flag disables the path, and
-non-Xet files fall through. Skips automatically when huggingface.co is
-unreachable or this hf_xet predates the streaming API.
+Exercises hugger._xet_download against real Xet-backed files: a full download
+matches the classic path byte-for-byte, an interrupted download RESUMES from the
+on-disk `.xetpart` (only the missing tail is fetched), an over-long/garbage
+partial restarts cleanly, raw byte-ranges are exact, the flag disables the path,
+and non-Xet files fall through. Token refresh (token_refresh_url on the stream
+group) and `.xetpart` byte-resume work together: a fresh group on retry refreshes
+the token, then resumes from the bytes already on disk. Skips automatically when
+huggingface.co is unreachable or this hf_xet predates the streaming API.
 
     python tests/test_xet_resume_live.py
 """
@@ -50,10 +53,10 @@ def _sha(p: Path) -> str:
     return h.hexdigest()
 
 
-def _reference() -> Path:
+def _reference(name: str = XET_FILE) -> Path:
     """The file fetched via the classic high-level path — the ground truth."""
     from huggingface_hub import hf_hub_download
-    return Path(hf_hub_download(REPO, filename=XET_FILE))
+    return Path(hf_hub_download(REPO, filename=name))
 
 
 def test_flag_disables():
@@ -78,17 +81,18 @@ def test_full_download_matches_classic():
 
 
 def test_resume_from_partial():
+    """Seed a real partial `.xetpart`, then resume: only the missing tail is
+    fetched (start=have) and the result matches the reference byte-for-byte."""
     if not ONLINE:
         return _skip("test_resume_from_partial")
     ref = _reference()
     full = _sha(ref)
     size = ref.stat().st_size
     with tempfile.TemporaryDirectory() as d:
-        # Seed a partial `.xetpart` with the real first ~1 MB, then resume.
         part = Path(d) / (XET_FILE + xd.PART_SUFFIX)
         cut = min(1 << 20, size // 2)
         with open(ref, "rb") as f, open(part, "wb") as g:
-            g.write(f.read(cut))
+            g.write(f.read(cut))  # real first ~1 MB already on disk
         handled = xd.download_file(REPO, "main", XET_FILE, d, token=None)
         assert handled is True
         out = Path(d) / XET_FILE
@@ -143,39 +147,21 @@ def test_non_xet_returns_false():
 XET_FILES = ["model.safetensors", "pytorch_model.bin", "tf_model.h5"]  # all Xet-backed
 
 
-def _check_download_all(d, names):
-    refs = {n: Path(__import__("huggingface_hub").hf_hub_download(REPO, filename=n)) for n in names}
-    # seed the first file with its real first half — must resume, not restart
-    first = names[0]
-    (Path(d) / (first + xd.PART_SUFFIX)).write_bytes(
-        refs[first].read_bytes()[: refs[first].stat().st_size // 2])
-    classic = xd.download_all(REPO, "main", names + [PLAIN_FILE], d, token=None)
-    assert classic == [PLAIN_FILE], classic
-    assert not (Path(d) / PLAIN_FILE).exists()  # non-Xet not handled here
-    for n in names:
-        assert _sha(Path(d) / n) == _sha(refs[n]), n
-
-
-def test_download_all_concurrent():
-    """Several Xet files stream concurrently through one group; non-Xet files are
-    returned for the classic path; a pre-seeded file proves resume on this path."""
+def test_download_all_resumes_one():
+    """Several Xet files download concurrently (each its own short-lived group); a
+    pre-seeded partial proves resume on this path; non-Xet files are returned."""
     if not ONLINE:
-        return _skip("test_download_all_concurrent")
+        return _skip("test_download_all_resumes_one")
     with tempfile.TemporaryDirectory() as d:
-        _check_download_all(d, XET_FILES)  # 3 files, default concurrency (parallel)
-
-
-def test_download_all_sequential():
-    """HUGGER_XET_CONCURRENCY=1 forces the sequential path — same result."""
-    if not ONLINE:
-        return _skip("test_download_all_sequential")
-    os.environ["HUGGER_XET_CONCURRENCY"] = "1"
-    try:
-        assert xd._concurrency() == 1
-        with tempfile.TemporaryDirectory() as d:
-            _check_download_all(d, XET_FILES[:2])
-    finally:
-        os.environ.pop("HUGGER_XET_CONCURRENCY", None)
+        refs = {n: _reference(n) for n in XET_FILES}
+        first = XET_FILES[0]
+        (Path(d) / (first + xd.PART_SUFFIX)).write_bytes(
+            refs[first].read_bytes()[: refs[first].stat().st_size // 2])  # real first half
+        classic = xd.download_all(REPO, "main", XET_FILES + [PLAIN_FILE], d, token=None)
+        assert classic == [PLAIN_FILE], classic
+        assert not (Path(d) / PLAIN_FILE).exists()  # non-Xet not handled here
+        for n in XET_FILES:
+            assert _sha(Path(d) / n) == _sha(refs[n]), n
 
 
 if __name__ == "__main__":
