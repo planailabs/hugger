@@ -902,16 +902,22 @@ def manage_page(req, sess, repo_id: str):
     if not rec:
         return page(Div(P("Not archived.", cls="muted"), cls="card"), sess=sess, active="archives")
     move = _move_control(repo_id, rec.get("store_id"), store.list_stores())
+    crumbs = Nav(
+        A("Archives", href="/archives", cls="link"),
+        Span("/", cls="crumb-sep", aria_hidden="true"),
+        Span(repo_id, cls="mono", aria_current="page"),
+        cls="breadcrumb",
+    )
     info = Div(
         H2(f"Manage {repo_id}"),
         P("Store: ", Span(rec.get("store_name") or "—", cls="mono"),
           " · ", Span(f"{rec['n_downloaded']}/{rec['n_files']} files", cls="muted"),
           " · ", Span(human_size(rec["size_bytes"]), cls="muted")),
         Div(Span("Move to another store: ", cls="muted"), move, cls="row"),
-        A("← Back to archives", href="/archives", cls="link"),
         cls="card",
     )
     return page(
+        crumbs,
         info,
         Div(H2("Files", style="font-size:20px;margin-bottom:8px"), manage_list_fragment(repo_id), cls="card"),
         Div(H2("Jobs", cls="head-line"), jobs_panel(), cls="card"),

@@ -25,6 +25,8 @@
   header nav a.active::after { content: ""; @apply absolute left-[13px] right-[13px] bottom-1.5 h-[3px] bg-white rounded-sm; }
 
   main { @apply max-w-[1200px] mx-auto pt-7 px-6 pb-16; }
+  .breadcrumb { @apply flex items-center gap-2 text-[15px] mb-4; }
+  .breadcrumb .crumb-sep { @apply text-muted2; }
   .card { @apply bg-surface border-2 border-line rounded-xl py-6 px-7 mb-[22px]; }
   h2 { @apply m-0 mb-4 font-brand font-bold text-[25px] text-accentink leading-[1.25]; }
   h3 { @apply font-brand text-accentink; }
