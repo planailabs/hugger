@@ -44,6 +44,34 @@ def write_verify(model_dir: Path | str, state: dict) -> None:
         pass
 
 
+BAD_NAME = ".hugger.bad"
+
+
+def bad_file(model_dir: Path | str) -> Path:
+    return Path(model_dir) / BAD_NAME
+
+
+def read_bad(model_dir: Path | str) -> dict:
+    """Files that failed the last verification, persisted so the UI can offer a
+    re-download. {"files": [...], "attempted": [...]}; empty dict if none."""
+    try:
+        return json.loads(bad_file(model_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def write_bad(model_dir: Path | str, files, attempted) -> None:
+    try:
+        bad_file(model_dir).write_text(
+            json.dumps({"files": list(files), "attempted": list(attempted)}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def clear_bad(model_dir: Path | str) -> None:
+    bad_file(model_dir).unlink(missing_ok=True)
+
+
 def read_progress(model_dir: Path | str, meta: dict, base: int = 0) -> int:
     """Live downloaded bytes for the progress bar.
 

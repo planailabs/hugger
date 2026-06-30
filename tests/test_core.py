@@ -551,6 +551,48 @@ def test_verify_resumes_skipping_done_files():
         store.delete_archive_and_hashes(repo)
 
 
+def test_verify_auto_repair_redownloads_bad():
+    """A verify with auto=True deletes a failed file and re-triggers the download,
+    marking it attempted so a still-bad file doesn't re-download forever."""
+    repo = "org/verify-auto"
+    a, mdir = _seed_verifiable(repo, good=False)  # b.bin's rhash is wrong
+    started = {}
+    osd = jobs.manager.start_download
+    jobs.manager.start_download = lambda r, rev="main", store_id=None, selected=None: (
+        started.update(repo=r, selected=selected) or jobs.Job(id="redl", repo_id=r))
+    job = jobs.Job(id="va", repo_id=repo, type="verify", store_id=a, total_bytes=10, auto=True)
+    jobs.manager._jobs[job.id] = job
+    try:
+        jobs.manager._run_verify(job)
+        assert started.get("repo") == repo            # re-download triggered
+        assert not (mdir / "b.bin").exists()          # bad file deleted for re-fetch
+        assert (mdir / "a.bin").exists()              # good file untouched
+        rec = metadata.read_bad(mdir)
+        assert "b.bin" in rec["attempted"]            # won't auto-loop
+    finally:
+        jobs.manager.start_download = osd
+        jobs.manager._jobs.pop(job.id, None)
+        store.delete_archive_and_hashes(repo)
+
+
+def test_redownload_bad_manual_clears_and_resumes():
+    repo = "org/redl-manual"
+    a, mdir = _seed_verifiable(repo, good=True)
+    metadata.write_bad(mdir, ["a.bin"], ["a.bin"])   # recorded bad (already attempted)
+    started = {}
+    osd = jobs.manager.start_download
+    jobs.manager.start_download = lambda r, rev="main", store_id=None, selected=None: (
+        started.update(repo=r, selected=selected) or jobs.Job(id="m", repo_id=r))
+    try:
+        jobs.manager.redownload_bad(repo)             # manual: only=None, no mark_attempted
+        assert started.get("repo") == repo
+        assert not (mdir / "a.bin").exists()          # deleted -> will be re-fetched
+        assert metadata.read_bad(mdir) == {}          # manual clears the bad record
+    finally:
+        jobs.manager.start_download = osd
+        store.delete_archive_and_hashes(repo)
+
+
 def test_verify_runs_in_separate_lane():
     """A verify job and a transfer job run at once (independent lanes)."""
     mgr, a = _scheduler_fixture()

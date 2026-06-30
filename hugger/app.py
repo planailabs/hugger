@@ -152,7 +152,7 @@ def _sig(prefix: str, key: str) -> str:
 _PILL = {
     "current": "ok", "done": "ok", "unchanged": "ok", "downloaded": "ok",
     "update": "warn", "update available": "warn", "paused": "warn", "queued": "warn",
-    "missing": "err", "error": "err", "changed": "err",
+    "missing": "err", "error": "err", "changed": "err", "bad": "err",
     "running": "info", "downloading": "info",
 }
 
@@ -285,7 +285,7 @@ def file_list(files: list[dict], *, submit_buttons: list, signals: dict | None =
         if removable_repo:
             rm = (ds_button("Remove", f"@post('/ui/file-remove/{removable_repo}?path={quote(f['path'])}')",
                             indicator=_sig("rm", f["path"]), cls="danger")
-                  if status == "downloaded" else "")
+                  if status in ("downloaded", "bad") else "")
             cells.append(Td(rm))
         rows.append(Tr(*cells))
     return Div(
@@ -300,12 +300,15 @@ def file_statuses(repo_id: str, files: list[dict]):
     that are currently downloading (and so can't be selected)."""
     rec = store.get_archive(repo_id)
     downloading = jobs.manager.active_download_files(repo_id)
+    bad = set(metadata.read_bad(rec["path"]).get("files", [])) if rec else set()
     statuses = {}
     for f in files:
-        if rec and metadata.file_downloaded(rec["path"], f["path"], f["size"]):
-            statuses[f["path"]] = "downloaded"
-        elif f["path"] in downloading:
+        if f["path"] in downloading:
             statuses[f["path"]] = "downloading"
+        elif f["path"] in bad:
+            statuses[f["path"]] = "bad"  # failed verification
+        elif rec and metadata.file_downloaded(rec["path"], f["path"], f["size"]):
+            statuses[f["path"]] = "downloaded"
         else:
             statuses[f["path"]] = "missing"
     locked = {p for p, s in statuses.items() if s == "downloading"}
@@ -972,12 +975,32 @@ def manage_page(req, sess, repo_id: str):
             cls="row"),
         cls="card",
     )
-    return page(
-        crumbs,
-        info,
+    bad = metadata.read_bad(rec["path"]).get("files", [])
+    parts = [crumbs, info]
+    if bad:
+        parts.append(_bad_files_notice(repo_id, bad))
+    parts += [
         Div(H2("Files", style="font-size:20px;margin-bottom:8px"), manage_list_fragment(repo_id), cls="card"),
         Div(H2("Jobs", cls="head-line"), jobs_panel(), cls="card"),
-        sess=sess, active="archives",
+    ]
+    return page(*parts, sess=sess, active="archives")
+
+
+def _bad_files_notice(repo_id: str, bad: list[str]):
+    """Warning card: files that failed verification + a one-click re-download
+    (deletes them and resumes the download so only those are re-fetched)."""
+    shown = ", ".join(bad[:6]) + (f" … (+{len(bad) - 6} more)" if len(bad) > 6 else "")
+    return Div(
+        Span("⚠️", cls="notice-icon", **{"aria-hidden": "true"}),
+        Div(
+            P(Strong(f"{len(bad)} file(s) failed verification"),
+              " — the on-disk bytes don't match the expected hash."),
+            P(Span(shown, cls="mono wrap"), cls="muted mb-sm"),
+            ds_button(f"Re-download {len(bad)} bad file(s)", f"@post('/ui/redownload-bad/{repo_id}')",
+                      indicator=_sig("rb", repo_id), busy="Starting…", icon=dl_icon()),
+            cls="grow",
+        ),
+        cls="notice",
     )
 
 
@@ -1011,6 +1034,16 @@ async def ui_verify(req, sess, repo_id: str):
         try:
             jobs.manager.start_verify(repo_id)
         except KeyError:
+            pass
+    return patch(jobs_body())
+
+
+@rt("/ui/redownload-bad/{repo_id:path}", methods=["POST"])
+async def ui_redownload_bad(req, sess, repo_id: str):
+    if await _ds_csrf_ok(req, sess):
+        try:
+            jobs.manager.redownload_bad(repo_id)
+        except (jobs.InsufficientSpace, jobs.Busy, KeyError):
             pass
     return patch(jobs_body())
 

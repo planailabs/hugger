@@ -93,6 +93,7 @@ class Job:
     src_store_id: str | None = None
     rate: float = 0.0               # smoothed bytes/sec (runtime only)
     stalls: int = 0                 # auto-restarts due to staleness (runtime only)
+    auto: bool = field(default=False, repr=False)  # verify auto-repairs bad files
     _stop: threading.Event = field(default_factory=threading.Event, repr=False)
     _preempt: threading.Event = field(default_factory=threading.Event, repr=False)
     _proc: subprocess.Popen | None = field(default=None, repr=False)
@@ -213,10 +214,11 @@ class JobManager:
                 return j
         return None
 
-    def start_verify(self, repo_id: str) -> Job:
+    def start_verify(self, repo_id: str, auto: bool = False) -> Job:
         """Queue a job that hashes the model's downloaded files and checks them
         against the expected hashes. Runs in the verify lane (adjacent to a
-        transfer). Returns the existing verify job if one is already active."""
+        transfer). With auto=True (post-download), a failed file is deleted and
+        re-downloaded automatically. Returns an existing active verify if any."""
         existing = self._active_verify_for(repo_id)
         if existing:
             return existing
@@ -231,9 +233,42 @@ class JobManager:
                 if metadata.file_downloaded(model_dir, f["path"], f.get("size")):
                     total += f.get("size", 0) or 0
         job = Job(id=uuid.uuid4().hex[:12], repo_id=repo_id, revision=rec["revision"],
-                  type="verify", store_id=rec["store_id"], total_bytes=total, sha=rec["sha"])
+                  type="verify", store_id=rec["store_id"], total_bytes=total, sha=rec["sha"],
+                  auto=auto)
         self._register(job)
         return job
+
+    def redownload_bad(self, repo_id: str, only: list[str] | None = None,
+                       mark_attempted: bool = False) -> Job | None:
+        """Delete bad files (those in `only`, or all recorded bad files) and resume
+        the download so they're re-fetched — the original file selection is kept,
+        so deleting a file just makes it 'missing' and only those re-download.
+
+        `mark_attempted` (auto-repair) records the retried files so a file that's
+        still bad after one auto re-download isn't re-fetched forever. A manual
+        re-download clears that history, giving the files a fresh auto chance."""
+        rec = store.get_archive(repo_id)
+        if not rec:
+            return None
+        model_dir = Path(rec["path"])
+        badrec = metadata.read_bad(model_dir)
+        bad = badrec.get("files", [])
+        targets = [b for b in only if b in bad] if only is not None else list(bad)
+        if not targets:
+            return None
+        meta = metadata.read(model_dir)
+        selected = meta.get("selected") if meta else None  # keep the original selection
+        for rel in targets:
+            (model_dir / rel).unlink(missing_ok=True)
+            store.delete_file_hash(repo_id, rel)
+        remaining = [b for b in bad if b not in targets]
+        attempted = (set(badrec.get("attempted", [])) | set(targets)) if mark_attempted else set()
+        if remaining or attempted:
+            metadata.write_bad(model_dir, remaining, sorted(attempted))
+        else:
+            metadata.clear_bad(model_dir)
+        return self.start_download(repo_id, rec["revision"], store_id=rec["store_id"],
+                                   selected=selected)
 
     def active_download_files(self, repo_id: str) -> set[str]:
         """Files a queued/running download for `repo_id` is fetching (from its
@@ -541,9 +576,10 @@ class JobManager:
                 job.status = "done"; job.persist()
                 # Hash the model in a separate verify job (adjacent lane) so this
                 # download's slot frees immediately for the next one and the
-                # integrity hashing doesn't block it. Best-effort.
+                # integrity hashing doesn't block it. auto=True so any file that
+                # fails the hash is deleted and re-downloaded automatically.
                 try:
-                    self.start_verify(job.repo_id)
+                    self.start_verify(job.repo_id, auto=True)
                 except Exception:
                     pass
             elif job._preempt.is_set():
@@ -638,6 +674,7 @@ class JobManager:
             ok_set = set(st.get("ok", []))
             bad = list(st.get("bad", []))
             base = int(st.get("done_bytes", 0) or 0)
+            job.auto = job.auto or bool(st.get("auto"))  # survive an interrupted auto verify
             job.total_bytes = job.total_bytes or meta.get("total_size", 0)
             job.done_bytes = base
             job.persist()
@@ -649,7 +686,7 @@ class JobManager:
                 if force or now - last_save[0] >= 1.0:
                     last_save[0] = now
                     metadata.write_verify(model_dir, {"ok": sorted(ok_set), "bad": bad,
-                                                      "done_bytes": base})
+                                                      "done_bytes": base, "auto": job.auto})
                     _live.bump()
 
             for f in meta.get("files", []):
@@ -692,13 +729,30 @@ class JobManager:
                 save()
 
             metadata.verify_file(model_dir).unlink(missing_ok=True)
-            if bad:
+            if not bad:
+                metadata.clear_bad(model_dir)  # all good now
+                job.status = "done"; job.persist()
+                return
+            # Some files failed the hash. Persist them (for the UI re-download) and
+            # track which we've already auto-retried so a still-bad file isn't
+            # re-fetched forever.
+            prev_attempted = set(metadata.read_bad(model_dir).get("attempted", []))
+            metadata.write_bad(model_dir, bad, prev_attempted)
+            fresh = [b for b in bad if b not in prev_attempted]
+            summary = ", ".join(bad[:3]) + (" …" if len(bad) > 3 else "")
+            if job.auto and fresh:
+                # auto-repair: delete the freshly-bad files and re-download them.
                 job.status = "error"
-                job.error = f"{len(bad)} file(s) failed verification: " + ", ".join(bad[:3]) + (
-                    " …" if len(bad) > 3 else "")
+                job.error = f"{len(bad)} file(s) failed; re-downloading {len(fresh)}"
+                job.persist()
+                try:
+                    self.redownload_bad(job.repo_id, only=fresh, mark_attempted=True)
+                except Exception:
+                    pass
             else:
-                job.status = "done"
-            job.persist()
+                job.status = "error"
+                job.error = f"{len(bad)} file(s) failed verification: {summary}"
+                job.persist()
         except Exception as e:
             job.status = "error"; job.error = f"{type(e).__name__}: {e}"; job.persist()
         finally:
