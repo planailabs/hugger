@@ -84,6 +84,17 @@ def dl_icon(size: int = 16):
     )
 
 
+# Reload icon: circular refresh arrows (check/update actions).
+def reload_icon(size: int = 16):
+    return NotStr(
+        f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" '
+        'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" '
+        'aria-hidden="true" style="flex:none"><polyline points="23 4 23 10 17 10"></polyline>'
+        '<polyline points="1 20 1 14 7 14"></polyline>'
+        '<path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>'
+    )
+
+
 def ds_button(label: str, action: str, *, indicator: str, busy: str | None = None,
               cls: str = "", icon=None, **kw):
     """Button that fires a Datastar action (e.g. "@post('/x')") with built-in busy
@@ -518,7 +529,7 @@ def archives_body():
     header = Div(
         H2("Archived models"),
         ds_button("Check all for updates", "@post('/ui/check-all')",
-                  indicator="_checkall", busy="Checking…", cls="ghost"),
+                  indicator="_checkall", busy="Checking…", cls="ghost", icon=reload_icon()),
         cls="section-head",
     )
     return Div(header, body, id="archives-body")
@@ -665,7 +676,7 @@ def archives_page(sess):
     # their progress is visible right here.
     return page(
         Div(archives_panel(), cls="card"),
-        Div(H2("Jobs"), jobs_panel(), cls="card"),
+        Div(H2("Jobs", cls="head-line"), jobs_panel(), cls="card"),
         sess=sess, active="archives",
     )
 
@@ -903,7 +914,7 @@ def manage_page(req, sess, repo_id: str):
     return page(
         info,
         Div(H2("Files", style="font-size:20px;margin-bottom:8px"), manage_list_fragment(repo_id), cls="card"),
-        Div(H2("Jobs"), jobs_panel(), cls="card"),
+        Div(H2("Jobs", cls="head-line"), jobs_panel(), cls="card"),
         sess=sess, active="archives",
     )
 
@@ -941,11 +952,11 @@ def _update_modal(repo_id: str, notice: str | None = None):
         return modal("Update", P(f"Verify failed: {e}", cls="err"))
     changed = set(v["changed"]) | set(v["missing"])
     statuses = {f["path"]: f["status"] for f in v["files"]}
-    buttons = [ds_button(f"⟳ Update changed ({len(changed)})",
-                         f"$mode='selected'; @post('/ui/update/{repo_id}')", indicator="_upd")]
+    buttons = [ds_button(f"Update changed ({len(changed)})",
+                         f"$mode='selected'; @post('/ui/update/{repo_id}')", indicator="_upd", icon=reload_icon())]
     if v["all_present"]:
-        buttons.append(ds_button("⟳ Re-download all", f"$mode='all'; @post('/ui/update/{repo_id}')",
-                                 indicator="_updall", cls="ghost"))
+        buttons.append(ds_button("Re-download all", f"$mode='all'; @post('/ui/update/{repo_id}')",
+                                 indicator="_updall", cls="ghost", icon=reload_icon()))
     form = file_list(
         v["files"], signals={"repo": repo_id},
         statuses=statuses, preselect=changed, submit_buttons=buttons,

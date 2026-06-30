@@ -69,6 +69,8 @@
   .actions button, .actions .btn { @apply h-9 px-3.5 text-sm min-w-[92px]; }
   .section-head { @apply flex items-center flex-wrap gap-4 pb-3.5 border-b-2 border-divider mb-4; }
   .section-head h2 { @apply m-0; }
+  /* standalone section title with a divider below it (no action button) */
+  h2.head-line { @apply pb-3.5 border-b-2 border-divider; }
 
   /* text helpers */
   .mono { @apply font-mono text-[.9em]; }
