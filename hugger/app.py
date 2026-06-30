@@ -1122,7 +1122,7 @@ def stores_body(notice: str | None = None):
         Input(type="text", placeholder="name", cls="narrow mono", **{"data-bind": "sname"}),
         Input(type="text", placeholder="/absolute/path", cls="mono", **{"data-bind": "spath"}),
         ds_button("Add store", "@post('/ui/stores/add')", indicator="_addstore", busy="Adding…"),
-        cls="row", **{"data-signals": json.dumps({"sname": "", "spath": ""})},
+        cls="row divider-top mt-[18px]", **{"data-signals": json.dumps({"sname": "", "spath": ""})},
     )
     head = [H2("Data stores")]
     if notice:
