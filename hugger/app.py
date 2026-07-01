@@ -589,8 +589,8 @@ def jobs_body(notice: str | None = None):
         else:
             items.append(Div(Span(check_icon(15), cls="ok-check"), Span(j.repo_id, cls="mono"), Span(f" {_job_done_word(j)}", cls="muted"), cls="card compact"))
     if jobs.MAX_ACTIVE == 1 and sum(1 for j in active if j.status in ("queued", "running")) > 1:
-        items.append(P(info_icon(14), " One job transfers at a time; the rest wait in the queue. "
-                       "Use “Run now” to jump the queue.", cls="muted note"))
+        items.append(Div(P(info_icon(14), " One job transfers at a time; the rest wait in the queue. "
+                           "Use “Run now” to jump the queue.", cls="muted note"), cls="card compact"))
     if notice:
         items = [Div(P(notice, cls="err"), cls="card"), *items]
     # The wrapper keeps its id for the SSE morph; each job is its own top-level card.
