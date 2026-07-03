@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import subprocess
@@ -113,7 +114,11 @@ class Job:
         remaining = self.total_bytes - self.done_bytes
         if remaining <= 0:
             return None
-        return int(remaining / self.rate)
+        secs = remaining / self.rate
+        # a near-zero rate can overflow the division to float infinity
+        if not math.isfinite(secs):
+            return None
+        return int(secs)
 
     def persist(self) -> None:
         store.save_job({
