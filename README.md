@@ -34,7 +34,13 @@ nix build          # build the hugger package
 
 ### Docker
 
-A minimal OCI image is built with nix's `dockerTools` (no Dockerfile/daemon):
+An image is provided over the plan.ai registry:
+
+```bash
+docker run -p 7860:7860 -v hugger-data:/data registry.plan.ai/plan-ai/hugger/hugger:latest
+```
+
+The image is built with nix's `dockerTools` (no Dockerfile/daemon):
 
 ```bash
 nix build .#docker            # -> result (docker-archive .tar.gz)
