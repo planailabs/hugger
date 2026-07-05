@@ -4,7 +4,6 @@ on:
   push:
     branches: [ "trunk" ]
   pull_request:
-    branches: [ "trunk" ]
 
 jobs:
   test:
@@ -19,4 +18,4 @@ jobs:
         nix_path: nixpkgs=channel:nixos-unstable
         github_access_token: ${{ secrets.GITHUB_TOKEN }}
     - name: Run tests
-      run: nix develop -c bash test.sh
+      run: bash test.sh
