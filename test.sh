@@ -4,3 +4,4 @@
 nix develop .#test -c python tests/test_core.py
 nix develop .#test -c python tests/test_api.py
 nix develop .#test -c python tests/test_hub_live.py
+nix flake check -L
