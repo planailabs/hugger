@@ -1391,13 +1391,15 @@ async def ui_store_delete(req, sess, store_id: str):
 @rt("/settings")
 def settings(sess, msg: str = ""):
     note = P(msg, cls="muted") if msg else ""
+    csrf = auth.csrf_token(sess)
+    csrf_field = Input(type="hidden", name="csrf", value=csrf)
     token_card = Div(
         H2("Extension API token"),
         P("Paste this into the hugger browser extension to authorize it. "
           "Keep it secret — it grants archive access.", cls="muted"),
         Label("Token", **{"for": "ext-token"}, cls="field-label"),
         Input(id="ext-token", type="text", value=cfg.api_token, readonly=True, cls="mono token-field"),
-        Form(action_button("Rotate token", cls="danger", busy="Rotating…"),
+        Form(csrf_field, action_button("Rotate token", cls="danger", busy="Rotating…"),
              method="post", action="/settings/rotate-token"),
         cls="card",
     )
@@ -1411,17 +1413,19 @@ def settings(sess, msg: str = ""):
         H2("HuggingFace token"),
         P("Needed to download gated or private models. ", Span(src_label, cls="muted")),
         Form(
+            csrf_field,
             Input(type="password", name="token", placeholder="hf_… (leave blank and Clear to remove)", cls="mono"),
             action_button("Save token", busy="Saving…"),
             method="post", action="/settings/hf-token", cls="row",
         ),
-        (Form(action_button("Clear token", cls="danger", busy="Clearing…"), method="post", action="/settings/hf-token/clear")
+        (Form(csrf_field, action_button("Clear token", cls="danger", busy="Clearing…"), method="post", action="/settings/hf-token/clear")
          if src == "ui" else ""),
         cls="card",
     )
     pw_card = Div(
         H2("Change password"),
         Form(
+            csrf_field,
             Input(type="password", name="current", placeholder="current password"),
             Input(type="password", name="new", placeholder="new password"),
             action_button("Update password", busy="Updating…"),
@@ -1442,27 +1446,39 @@ def settings(sess, msg: str = ""):
     return page(note, token_card, hf_card, pw_card, info, sess=sess, active="settings")
 
 
+def _csrf_reject():
+    return RedirectResponse("/settings?msg=Invalid+CSRF+token", status_code=303)
+
+
 @rt("/settings/hf-token", methods=["POST"])
-def settings_hf_token(token: str = ""):
+def settings_hf_token(sess, token: str = "", csrf: str = ""):
+    if not auth.csrf_ok(sess, csrf):
+        return _csrf_reject()
     hub.set_hf_token(token.strip() or None)
     msg = "HF+token+saved" if token.strip() else "HF+token+cleared"
     return RedirectResponse(f"/settings?msg={msg}", status_code=303)
 
 
 @rt("/settings/hf-token/clear", methods=["POST"])
-def settings_hf_token_clear():
+def settings_hf_token_clear(sess, csrf: str = ""):
+    if not auth.csrf_ok(sess, csrf):
+        return _csrf_reject()
     hub.set_hf_token(None)
     return RedirectResponse("/settings?msg=HF+token+cleared", status_code=303)
 
 
 @rt("/settings/rotate-token", methods=["POST"])
-def settings_rotate():
+def settings_rotate(sess, csrf: str = ""):
+    if not auth.csrf_ok(sess, csrf):
+        return _csrf_reject()
     auth.rotate_token()
     return RedirectResponse("/settings?msg=Token+rotated", status_code=303)
 
 
 @rt("/settings/password", methods=["POST"])
-def settings_password(current: str = "", new: str = ""):
+def settings_password(sess, current: str = "", new: str = "", csrf: str = ""):
+    if not auth.csrf_ok(sess, csrf):
+        return _csrf_reject()
     if not auth.verify_password(current):
         return RedirectResponse("/settings?msg=Current+password+incorrect", status_code=303)
     if len(new) < 6:
