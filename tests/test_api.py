@@ -217,6 +217,13 @@ def test_root_redirects_without_session():
     assert r.status_code == 303 and r.headers["location"] == "/login"
 
 
+def test_js_suffix_path_does_not_bypass_auth():
+    """A non-static path ending in .js must not skip auth (only /static/* is public)."""
+    cli = _setup_client()
+    r = cli.get("/secret.js")
+    assert r.status_code == 303 and r.headers["location"] == "/login"
+
+
 def test_login_page_renders():
     cli = _setup_client()
     assert cli.get("/login").status_code == 200

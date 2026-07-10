@@ -471,7 +471,10 @@ def _before(req, sess):
 
 beforeware = Beforeware(
     _before,
-    skip=[r"/favicon\.ico", r"/static/.*", r".*\.css", r".*\.js", "/login"],
+    # Allowlist only known-public paths. A broad r".*\.js"/r".*\.css" would let
+    # any future route ending in .js/.css bypass auth; all our assets live under
+    # /static/, so scope it there.
+    skip=[r"/favicon\.ico", r"/static/.*", "/login"],
 )
 
 
