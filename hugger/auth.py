@@ -11,7 +11,7 @@ import secrets
 import time
 
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 
 from . import store
 from .config import cfg
@@ -47,7 +47,9 @@ def verify_password(plain: str) -> bool:
         return False
     try:
         _ph.verify(h, plain)
-    except VerifyMismatchError:
+    except (VerifyMismatchError, VerificationError, InvalidHashError):
+        # wrong password, or a stored hash that's malformed/corrupt — either way
+        # this is a failed login, not a 500.
         return False
     if _ph.check_needs_rehash(h):  # transparently upgrade params over time
         store.set_setting(_PW_KEY, _ph.hash(plain))
