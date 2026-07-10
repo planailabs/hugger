@@ -53,6 +53,39 @@ def test_store_repo_path_cross_platform():
     assert p.parts[-2:] == ("org", "model")  # uses OS separator, not literal "/"
 
 
+def test_repo_id_traversal_rejected():
+    """A repo_id with '..' or an absolute/empty segment must not escape the root."""
+    for bad in ("org/../../../etc", "../evil", "/etc/passwd", "org//model", "a/b/.."):
+        try:
+            jobs.store_repo_path("/data/archives", bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"traversal not rejected: {bad!r}")
+    # the well-formed id still resolves inside the root
+    p = jobs.store_repo_path("/data/archives", "org/model").resolve()
+    assert p.is_relative_to(Path("/data/archives").resolve())
+
+
+def test_remove_file_traversal_rejected():
+    """remove_file must refuse to delete a path outside the model dir."""
+    store.run_migrations()
+    sid = store.ensure_default_store(str(Path(_TMP) / "archives"))
+    mdir = Path(_TMP) / "rmtrav" / "org" / "model"
+    mdir.mkdir(parents=True, exist_ok=True)
+    outside = Path(_TMP) / "rmtrav" / "secret.txt"
+    outside.write_text("keep me")
+    store.upsert_archive("org/rmtrav", "main", "sha", str(mdir), 0, sid)
+    try:
+        jobs.manager.remove_file("org/rmtrav", "../../secret.txt")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("traversal delete not rejected")
+    assert outside.exists()  # file outside the model dir survived
+    store.delete_archive("org/rmtrav")
+
+
 def test_dir_size(tmp=None):
     d = Path(_TMP) / "sz"
     d.mkdir(parents=True, exist_ok=True)

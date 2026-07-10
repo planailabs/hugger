@@ -57,8 +57,22 @@ class Busy(Exception):
     pass
 
 
+def safe_repo_id(repo_id: str) -> str:
+    """Return repo_id if it is safe to use as path segments, else raise.
+
+    Blocks traversal ('..'), empty/absolute segments, and Windows path tricks so
+    a crafted repo_id can't escape the archive root when joined onto a store path.
+    """
+    parts = repo_id.split("/")
+    if not parts or any(
+        p in ("", ".", "..") or "\\" in p or ":" in p for p in parts
+    ):
+        raise ValueError(f"unsafe repo_id: {repo_id!r}")
+    return repo_id
+
+
 def store_repo_path(store_path: str, repo_id: str) -> Path:
-    return Path(store_path).joinpath(*repo_id.split("/"))
+    return Path(store_path).joinpath(*safe_repo_id(repo_id).split("/"))
 
 
 def _lane(job_type: str) -> str:
@@ -845,8 +859,10 @@ class JobManager:
         rec = store.get_archive(repo_id)
         if not rec:
             return
-        model_dir = Path(rec["path"])
-        target = (model_dir / rel)
+        model_dir = Path(rec["path"]).resolve()
+        target = (model_dir / rel).resolve()
+        if not target.is_relative_to(model_dir):
+            raise ValueError(f"path escapes model dir: {rel!r}")
         if target.is_file():
             target.unlink()
         store.delete_file_hash(repo_id, rel)
