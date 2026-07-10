@@ -1021,7 +1021,7 @@ async def ui_job_files_save(req, sess, job_id: str):
     return modal_close()
 
 
-def manage_list_fragment(repo_id: str):
+def manage_list_fragment(repo_id: str, notice: str | None = None):
     """The reusable file list for the manage page (download missing / remove)."""
     rec = store.get_archive(repo_id)
     if not rec:
@@ -1038,7 +1038,8 @@ def manage_list_fragment(repo_id: str):
         submit_buttons=[ds_button("Download selected", f"@post('/ui/manage/{repo_id}')",
                                   indicator="_mgdl", icon=dl_icon())],
     )
-    return Div(form, id="managelist")
+    head = [P(notice, cls="err")] if notice else []
+    return Div(*head, form, id="managelist")
 
 
 @rt("/manage/{repo_id:path}", methods=["GET"])
@@ -1096,15 +1097,16 @@ def _bad_files_notice(repo_id: str, bad: list[str]):
 @rt("/ui/manage/{repo_id:path}", methods=["POST"])
 async def ui_manage_download(req, sess, repo_id: str):
     s = await _ds(req)
+    notice = None
     if auth.csrf_ok(sess, s.get("csrf")):
         files = list(s.get("files") or [])
         rec = store.get_archive(repo_id)
         if files and rec:
             try:
                 jobs.manager.start_download(repo_id, rec["revision"], store_id=rec["store_id"], selected=files)
-            except (jobs.InsufficientSpace, jobs.Busy):
-                pass  # the jobs stream surfaces failures; managelist just refreshes
-    return patch(manage_list_fragment(repo_id))
+            except (jobs.InsufficientSpace, jobs.Busy) as e:
+                notice = f"⚠️ {e}"
+    return patch(manage_list_fragment(repo_id, notice))
 
 
 @rt("/ui/file-remove/{repo_id:path}", methods=["POST"])
@@ -1129,12 +1131,15 @@ async def ui_verify(req, sess, repo_id: str):
 
 @rt("/ui/redownload-bad/{repo_id:path}", methods=["POST"])
 async def ui_redownload_bad(req, sess, repo_id: str):
+    notice = None
     if await _ds_csrf_ok(req, sess):
         try:
             jobs.manager.redownload_bad(repo_id)
-        except (jobs.InsufficientSpace, jobs.Busy, KeyError):
+        except (jobs.InsufficientSpace, jobs.Busy) as e:
+            notice = f"⚠️ {e}"
+        except KeyError:
             pass
-    return patch(jobs_body())
+    return patch(jobs_body(notice))
 
 
 def _update_modal(repo_id: str, notice: str | None = None):
@@ -1184,7 +1189,7 @@ async def ui_jobs():
     return sse_stream(jobs_body)
 
 
-def job_history_fragment():
+def job_history_fragment(notice: str | None = None):
     names = {s["id"]: s["name"] for s in store.list_stores()}
     rows = []
     for j in store.recent_jobs():
@@ -1213,7 +1218,8 @@ def job_history_fragment():
                   indicator="_clearfin", busy="Clearing…", cls="ghost"),
         cls="section-head",
     )
-    return Div(header, body,
+    head = [P(notice, cls="err")] if notice else []
+    return Div(*head, header, body,
                P("Finished jobs (done/error) are kept for 30 days, then pruned on "
                  "startup — or clear them now. Queued/running/paused jobs are kept "
                  "and resume after a restart.", cls="muted"),
@@ -1239,12 +1245,13 @@ async def ui_jobs_clear(req, sess):
 
 @rt("/ui/jobs/{job_id}/retry", methods=["POST"])
 async def ui_job_retry(req, sess, job_id: str):
+    notice = None
     if await _ds_csrf_ok(req, sess):
         try:
             jobs.manager.retry(job_id)
-        except (jobs.InsufficientSpace, jobs.Busy):
-            pass
-    return patch(job_history_fragment())
+        except (jobs.InsufficientSpace, jobs.Busy) as e:
+            notice = f"⚠️ {e}"
+    return patch(job_history_fragment(notice))
 
 
 @rt("/ui/archives", methods=["GET"])

@@ -182,6 +182,23 @@ def test_archive_space_error_shows_in_modal():
         appmod.hub.repo_files = of
 
 
+def test_retry_space_error_surfaces_notice():
+    """A failed retry (out of disk) must show an error, not silently no-op."""
+    cli = _setup_client()
+    _login(cli)
+    orig = jobs.manager.retry
+
+    def boom(job_id):
+        raise jobs.InsufficientSpace("need 805 GB but only 86 GB free")
+
+    jobs.manager.retry = boom
+    try:
+        r = _ds_post(cli, "/ui/jobs/xyz/retry", csrf=_csrf(cli)).text
+        assert "need 805 GB" in r
+    finally:
+        jobs.manager.retry = orig
+
+
 def test_search_returns_modal():
     cli = _setup_client()
     _login(cli)
