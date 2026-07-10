@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import traceback
 import threading
 import time
 import uuid
@@ -600,7 +601,9 @@ class JobManager:
                 try:
                     self.start_verify(job.repo_id, auto=True)
                 except Exception:
-                    pass
+                    # download is done but integrity check couldn't start — log it
+                    # so a silent skip doesn't hide possibly-corrupt files.
+                    traceback.print_exc()
             elif job._preempt.is_set():
                 job.status = "queued"; job.persist()
             elif job._stop.is_set():
@@ -766,8 +769,12 @@ class JobManager:
                 job.persist()
                 try:
                     self.redownload_bad(job.repo_id, only=fresh, mark_attempted=True)
-                except Exception:
-                    pass
+                except Exception as e:
+                    # the repair couldn't be queued — don't leave the user waiting
+                    # on a "re-downloading" message for a job that never starts.
+                    traceback.print_exc()
+                    job.error = f"{len(bad)} file(s) failed; auto-repair could not start: {e}"
+                    job.persist()
             else:
                 job.status = "error"
                 job.error = f"{len(bad)} file(s) failed verification: {summary}"

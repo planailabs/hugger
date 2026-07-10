@@ -630,6 +630,29 @@ def test_verify_auto_repair_redownloads_bad():
         store.delete_archive_and_hashes(repo)
 
 
+def test_verify_auto_repair_failure_surfaces_error():
+    """If the auto-repair re-download can't be queued (e.g. disk full), the job
+    error must say so instead of leaving a misleading 're-downloading' message."""
+    import contextlib
+    import io
+    repo = "org/verify-repair-fail"
+    a, mdir = _seed_verifiable(repo, good=False)  # b.bin is corrupt
+    orig = jobs.manager.redownload_bad
+    jobs.manager.redownload_bad = lambda *a, **k: (_ for _ in ()).throw(
+        jobs.InsufficientSpace("no space"))
+    job = jobs.Job(id="vrf", repo_id=repo, type="verify", store_id=a, total_bytes=10, auto=True)
+    jobs.manager._jobs[job.id] = job
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):  # swallow the logged traceback
+            jobs.manager._run_verify(job)
+        assert job.status == "error"
+        assert "auto-repair could not start" in (job.error or "")
+    finally:
+        jobs.manager.redownload_bad = orig
+        jobs.manager._jobs.pop(job.id, None)
+        store.delete_archive_and_hashes(repo)
+
+
 def test_redownload_bad_manual_clears_and_resumes():
     repo = "org/redl-manual"
     a, mdir = _seed_verifiable(repo, good=True)
