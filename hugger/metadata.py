@@ -8,12 +8,25 @@ stored — it's derived from the filesystem.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 META_NAME = ".hugger.json"
 PROGRESS_NAME = ".hugger.progress"
 VERIFY_NAME = ".hugger.verify"
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write via a temp file + os.replace so a crash mid-write can't leave a
+    truncated/partial file. os.replace is atomic within a filesystem."""
+    tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def meta_path(model_dir: Path | str) -> Path:
@@ -39,7 +52,7 @@ def read_verify(model_dir: Path | str) -> dict:
 
 def write_verify(model_dir: Path | str, state: dict) -> None:
     try:
-        verify_file(model_dir).write_text(json.dumps(state), encoding="utf-8")
+        _atomic_write_text(verify_file(model_dir), json.dumps(state))
     except OSError:
         pass
 
@@ -62,8 +75,9 @@ def read_bad(model_dir: Path | str) -> dict:
 
 def write_bad(model_dir: Path | str, files, attempted) -> None:
     try:
-        bad_file(model_dir).write_text(
-            json.dumps({"files": list(files), "attempted": list(attempted)}), encoding="utf-8")
+        _atomic_write_text(
+            bad_file(model_dir),
+            json.dumps({"files": list(files), "attempted": list(attempted)}))
     except OSError:
         pass
 
@@ -119,7 +133,7 @@ def algo_for(file_meta: dict) -> str:
 def write(model_dir: Path | str, meta: dict) -> None:
     p = meta_path(model_dir)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    _atomic_write_text(p, json.dumps(meta, indent=2))
 
 
 def read(model_dir: Path | str) -> dict | None:

@@ -67,6 +67,28 @@ def test_repo_id_traversal_rejected():
     assert p.is_relative_to(Path("/data/archives").resolve())
 
 
+def test_metadata_write_atomic_keeps_old_on_failure():
+    """A crash during metadata.write must not truncate the existing .hugger.json."""
+    d = Path(_TMP) / "atomicmeta"
+    d.mkdir(parents=True, exist_ok=True)
+    metadata.write(d, {"repo_id": "org/m", "selected": ["a"], "v": 1})
+    assert metadata.read(d)["v"] == 1
+
+    orig = metadata.os.replace
+    metadata.os.replace = lambda *a, **k: (_ for _ in ()).throw(OSError("crash"))
+    try:
+        try:
+            metadata.write(d, {"repo_id": "org/m", "selected": ["a", "b"], "v": 2})
+        except OSError:
+            pass
+    finally:
+        metadata.os.replace = orig
+    # old content (incl. the user's file selection) survived intact
+    assert metadata.read(d) == {"repo_id": "org/m", "selected": ["a"], "v": 1}
+    # no half-written temp file left behind
+    assert not list(d.glob(".hugger.json.tmp*"))
+
+
 def test_remove_file_traversal_rejected():
     """remove_file must refuse to delete a path outside the model dir."""
     store.run_migrations()
