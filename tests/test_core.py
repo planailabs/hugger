@@ -371,6 +371,29 @@ def test_disk_space_check_blocks_download():
         jobs.hub.repo_files, jobs.util.free_space = of, ofree
 
 
+def test_start_download_dedups_concurrent():
+    """A second start_download for the same repo returns the in-flight job, not a
+    duplicate worker writing the same dest."""
+    a = store.ensure_default_store(str(Path(_TMP) / "archives"))
+    of, ofree, osp = jobs.hub.repo_files, jobs.util.free_space, jobs.manager._spawn
+    jobs.hub.repo_files = lambda repo, rev="main": {"sha": "s", "files": [{"path": "f.bin", "size": 10}]}
+    jobs.util.free_space = lambda p: 10 ** 9
+    jobs.manager._spawn = lambda job: None  # don't launch a real subprocess
+    j1 = None
+    try:
+        j1 = jobs.manager.start_download("org/dedup", store_id=a)
+        j2 = jobs.manager.start_download("org/dedup", store_id=a)
+        assert j1.id == j2.id  # same job returned, not a second one
+        actives = [j for j in jobs.manager._jobs.values()
+                   if j.repo_id == "org/dedup" and j.type == "download"]
+        assert len(actives) == 1
+    finally:
+        jobs.hub.repo_files, jobs.util.free_space, jobs.manager._spawn = of, ofree, osp
+        if j1:
+            jobs.manager._jobs.pop(j1.id, None)
+        store.delete_archive_and_hashes("org/dedup")
+
+
 def test_pending_bytes_accounting():
     a = store.get_default_store()["id"]
     j = jobs.Job(id="p1", repo_id="o/m", store_id=a, status="running", total_bytes=500, done_bytes=200)

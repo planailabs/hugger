@@ -202,6 +202,11 @@ class JobManager:
     # --- starting work ----------------------------------------------------
     def start_download(self, repo_id: str, revision: str = "main",
                        store_id: str | None = None, selected: list[str] | None = None) -> Job:
+        # Deduplicate: a second click (or UI + extension firing together) must not
+        # spawn a second worker writing the same dest dir. Mirrors start_verify.
+        existing = self._active_download_for(repo_id)
+        if existing:
+            return existing
         st = store.get_store(store_id) if store_id else store.get_default_store()
         if not st:
             raise RuntimeError("no data store configured")
