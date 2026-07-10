@@ -1,4 +1,5 @@
 #!/bin/sh
+set -eu
 
 # Unit + HTTP integration + live-Hub tests (live tests skip when offline).
 nix develop .#test -c python tests/test_core.py
