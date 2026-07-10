@@ -31,6 +31,7 @@ function send(msg) {
 }
 
 function fmtSize(n) {
+  if (typeof n !== "number" || !isFinite(n)) return "?";
   let f = n;
   for (const u of ["B", "KB", "MB", "GB", "TB"]) {
     if (f < 1024 || u === "TB") return (u === "B" ? f : f.toFixed(1)) + " " + u;
@@ -87,6 +88,7 @@ function label(text) {
 }
 
 let CURRENT = null;
+let POLL_IV = null;  // handle of the active pollJob interval, so SPA nav can cancel it
 
 function render(status) {
   const b = box();
@@ -175,19 +177,24 @@ async function toggleFiles() {
   panel.append(list, footer);
 }
 
+function stopPoll() {
+  if (POLL_IV !== null) { clearInterval(POLL_IV); POLL_IV = null; }
+}
+
 function pollJob(jobId) {
-  const iv = setInterval(async () => {
+  stopPoll();  // never run two pollers at once
+  POLL_IV = setInterval(async () => {
     const resp = await send({ type: "status", job_id: jobId });
-    if (!resp || !resp.ok) { clearInterval(iv); return; }
+    if (!resp || !resp.ok) { stopPoll(); return; }
     const j = resp.data;
     if (["queued", "running", "downloading"].includes(j.status)) {
       toast(`${CURRENT}: ${j.percent}%`);
     } else if (j.status === "paused") {
-      clearInterval(iv); toast(`⏸ ${CURRENT} paused`);
+      stopPoll(); toast(`⏸ ${CURRENT} paused`);
     } else if (j.status === "done") {
-      clearInterval(iv); toast(`✓ Archived ${CURRENT}`); refresh();
+      stopPoll(); toast(`✓ Archived ${CURRENT}`); refresh();
     } else if (j.status === "error") {
-      clearInterval(iv); toast(`✗ ${CURRENT}: ${j.error}`, "error"); refresh();
+      stopPoll(); toast(`✗ ${CURRENT}: ${j.error}`, "error"); refresh();
     }
   }, 1500);
 }
@@ -219,6 +226,7 @@ async function refresh() {
 }
 
 function run() {
+  stopPoll();  // a poll from the previous page must not toast against the new one
   const repoId = repoIdFromPath(location.pathname);
   const existing = document.getElementById("hugger-box");
   if (!repoId) {
