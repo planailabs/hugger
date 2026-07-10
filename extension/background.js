@@ -52,12 +52,18 @@ async function api(path, opts = {}) {
   return data;
 }
 
+// Encode each repo_id segment but keep the "/" separators the {repo_id:path}
+// route matches on, so a special character in a segment can't reshape the path.
+function archivePath(repoId) {
+  return "/api/archive/" + String(repoId).split("/").map(encodeURIComponent).join("/");
+}
+
 async function handle(msg) {
   switch (msg.type) {
     case "ping":
       return await api("/api/ping");
     case "get_status":
-      return await api("/api/archive/" + msg.repo_id);
+      return await api(archivePath(msg.repo_id));
     case "get_files":
       return await api(
         "/api/files?repo_id=" + encodeURIComponent(msg.repo_id) +
@@ -71,7 +77,7 @@ async function handle(msg) {
     case "status":
       return await api("/api/status/" + encodeURIComponent(msg.job_id));
     case "remove":
-      return await api("/api/archive/" + msg.repo_id, { method: "DELETE" });
+      return await api(archivePath(msg.repo_id), { method: "DELETE" });
     default:
       throw new Error("Unknown message type: " + msg.type);
   }
