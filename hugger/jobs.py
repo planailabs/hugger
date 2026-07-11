@@ -186,8 +186,14 @@ class JobManager:
         for j in self._jobs.values():
             if j.id == exclude or j.status not in ("queued", "running"):
                 continue
-            if j.store_id == store_id:
-                total += max(0, j.total_bytes - j.done_bytes)
+            if j.store_id != store_id:
+                continue
+            # Reserve only the *remaining* bytes: subtract what's already on disk
+            # (completed files + in-flight partials). A running job's done_bytes is
+            # live; for a queued/paused one, recompute from disk so a stale seed
+            # doesn't over-reserve space that's already used.
+            on_disk = j.done_bytes if j.status == "running" else self._on_disk_bytes(j)
+            total += max(0, j.total_bytes - on_disk)
         return total
 
     def _ensure_space(self, st: dict, required: int) -> None:
@@ -214,7 +220,9 @@ class JobManager:
         info = hub.repo_files(repo_id, revision)
         meta = metadata.build(repo_id, revision, info["sha"], info["files"], selected)
         dest = store_repo_path(st["path"], repo_id)
-        already = metadata.state(dest, meta)["downloaded_bytes"] if dest.exists() else 0
+        # Count in-flight partials (.incomplete/.xetpart), not just completed files,
+        # so retrying a half-finished download only requires its *remaining* bytes.
+        already = metadata.progress_bytes(dest, meta) if dest.exists() else 0
         self._ensure_space(st, max(0, meta["total_size"] - already))
         metadata.write(dest, meta)
         # Record a (possibly partial) archive row up front so the model is

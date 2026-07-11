@@ -414,6 +414,51 @@ def test_pending_bytes_accounting():
         jobs.manager._jobs.pop("p1", None)
 
 
+def test_pending_bytes_subtracts_on_disk_partials():
+    """A queued, partially-downloaded job reserves only its remaining bytes,
+    recomputed from disk so a stale done_bytes cache can't over-reserve."""
+    a = store.ensure_default_store(str(Path(_TMP) / "archives"))
+    st = store.get_store(a)
+    dest = jobs.store_repo_path(st["path"], "org/pend")
+    dest.mkdir(parents=True, exist_ok=True)
+    metadata.write(dest, {"repo_id": "org/pend", "total_size": 100,
+                          "files": [{"path": "big.bin", "size": 100}]})
+    (dest / "big.bin.xetpart").write_bytes(b"x" * 60)  # 60 of 100 bytes in flight
+    j = jobs.Job(id="pend1", repo_id="org/pend", type="download", store_id=a,
+                 status="queued", total_bytes=100, done_bytes=0)  # stale done_bytes=0
+    jobs.manager._jobs["pend1"] = j
+    try:
+        contribution = (jobs.manager.pending_bytes(a)
+                        - jobs.manager.pending_bytes(a, exclude="pend1"))
+        assert contribution == 40  # 100 total - 60 already on disk
+    finally:
+        jobs.manager._jobs.pop("pend1", None)
+        store.delete_archive_and_hashes("org/pend")
+
+
+def test_space_check_subtracts_partial_download():
+    """Retrying a half-finished download only needs its remaining bytes: an
+    in-flight .xetpart counts as already-downloaded, not just completed files."""
+    a = store.ensure_default_store(str(Path(_TMP) / "archives"))
+    st = store.get_store(a)
+    dest = jobs.store_repo_path(st["path"], "org/partial")
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "big.bin.xetpart").write_bytes(b"x" * 60)  # 60 of 100 bytes on disk
+    of, ofree, osp = jobs.hub.repo_files, jobs.util.free_space, jobs.manager._spawn
+    jobs.hub.repo_files = lambda repo, rev="main": {"sha": "s", "files": [{"path": "big.bin", "size": 100}]}
+    jobs.util.free_space = lambda p: 50  # fits only if the 60 already-down is subtracted
+    jobs.manager._spawn = lambda job: None
+    j = None
+    try:
+        j = jobs.manager.start_download("org/partial", store_id=a)  # required 40 <= 50 free
+        assert j is not None
+    finally:
+        jobs.hub.repo_files, jobs.util.free_space, jobs.manager._spawn = of, ofree, osp
+        if j:
+            jobs.manager._jobs.pop(j.id, None)
+        store.delete_archive_and_hashes("org/partial")
+
+
 def test_import_store_and_file_status():
     b = store.add_store("imp", str(Path(_TMP) / "imp"))
     mdir = jobs.store_repo_path(store.get_store(b)["path"], "org/imported")
