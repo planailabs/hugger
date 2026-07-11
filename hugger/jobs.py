@@ -45,7 +45,7 @@ MAX_ACTIVE = _int_env("HUGGER_MAX_ACTIVE", 1, lo=1)
 MAX_VERIFY = _int_env("HUGGER_MAX_VERIFY", 1, lo=1)
 # A running download making no progress for this many seconds is considered
 # stalled and its worker is restarted in place (0 disables).
-STALE_SECS = float(os.environ.get("HUGGER_STALE_SECS", "90") or 0)
+STALE_SECS = float(os.environ.get("HUGGER_STALE_SECS", "300") or 0)
 
 
 class InsufficientSpace(Exception):

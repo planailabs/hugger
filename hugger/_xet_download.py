@@ -151,7 +151,7 @@ def _new_group(refresh_route: str, headers: dict):
 
 # Fsync the part and commit its ranges after this many new bytes — or after
 # _COMMIT_SECS with any pending bytes, so the parent's progress poll (and its
-# 90s stall watchdog) keeps advancing even on slow links.
+# stall watchdog, STALE_SECS) keeps advancing even on slow links.
 _COMMIT_BYTES = 8 << 20
 _COMMIT_SECS = 5.0
 
@@ -326,7 +326,7 @@ def download_all(repo_id: str, revision: str, rels: list[str], dest_dir: str | P
         return rel, meta
 
     # Enumerate concurrently — sequentially this takes O(files) round-trips with
-    # zero byte progress, long enough on big repos to trip the 90s stall restart.
+    # zero byte progress, long enough on big repos to trip the stall restart.
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, max(1, len(rels)))) as ex:
         for rel, meta in ex.map(fetch_meta, rels):
             xfd = getattr(meta, "xet_file_data", None)
