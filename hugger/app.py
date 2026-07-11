@@ -1651,6 +1651,14 @@ def main() -> None:
     import uvicorn
 
     print(f"hugger {VERSION} → http://{cfg.host}:{cfg.port}")
+    try:
+        import hf_xet
+        if not hasattr(hf_xet.ItemProgressReport, "transfer_bytes_completed"):
+            print("note: stock hf_xet wheel — no net-rate display and stall detection "
+                  "can't see in-flight wire bytes. `uv sync`/`uv run` reinstall the stock "
+                  "wheel; use `nix run` or scripts/patch-hfxet.sh for the patched build.")
+    except ImportError:
+        pass
     # The live panels hold long-lived SSE connections that never end on their own.
     # Run uvicorn ourselves so that, the moment shutdown begins, we wake every
     # stream (_live.begin_shutdown) — they return cleanly, the connections close,

@@ -48,6 +48,40 @@ def test_human_size():
     assert human_size(5 * 1024 * 1024) == "5.0 MB"
 
 
+def test_iter_timeout_probe():
+    """The stream watchdog only raises when no item arrives AND the liveness
+    probe says nothing is moving; while the probe reports wire progress it keeps
+    waiting instead of killing a healthy-but-slow stream."""
+    import itertools
+    import threading
+    from hugger._xet_download import _iter_timeout
+
+    def blocked():  # a producer that never yields (wedged socket)
+        threading.Event().wait()
+        yield  # pragma: no cover
+
+    # Probe alive twice, then dead -> survives 2 windows, raises on the 3rd.
+    lives = iter([True, True, False])
+    calls = itertools.count()
+    probe = lambda: (next(calls), next(lives))[1]  # noqa: E731
+    try:
+        next(_iter_timeout(blocked(), 0.05, probe=probe))
+        raise AssertionError("expected TimeoutError")
+    except TimeoutError:
+        pass
+    assert next(calls) == 3  # probed once per timed-out window
+
+    # No probe -> raises after the first window (old behavior).
+    try:
+        next(_iter_timeout(blocked(), 0.05))
+        raise AssertionError("expected TimeoutError")
+    except TimeoutError:
+        pass
+
+    # Items flow -> no timeout, probe never consulted.
+    assert list(_iter_timeout(iter([1, 2, 3]), 0.05, probe=lambda: False)) == [1, 2, 3]
+
+
 def test_human_eta():
     from hugger.app import human_eta
     assert human_eta(None) == "" and human_eta(-1) == ""

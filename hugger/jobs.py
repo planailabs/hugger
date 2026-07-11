@@ -544,8 +544,19 @@ class JobManager:
                 # samples), and the time of the last byte gained (for stall detection).
                 # `.hugger.xfer` (cumulative wire bytes from the Xet worker, when the
                 # patched hf_xet exposes them) feeds a separate network-rate EWMA.
+                # ANY movement of that file — value or mtime — also counts as
+                # liveness for the stall watchdog: the worker rewrites it while
+                # enumerating file metadata and while wire bytes flow inside a
+                # not-yet-delivered term, both of which produce no disk bytes.
+                def xfer_stamp():
+                    try:
+                        return metadata.xfer_file(dest).stat().st_mtime_ns
+                    except OSError:
+                        return None
+
                 last_t = time.monotonic(); last_b = job.done_bytes
                 last_x = metadata.read_xfer(dest)
+                last_stamp = xfer_stamp()
                 while not poll_stop.is_set():
                     prev = job.done_bytes
                     job.done_bytes = metadata.read_progress(dest, meta, base=base)
@@ -553,6 +564,10 @@ class JobManager:
                     if job.done_bytes != prev:
                         job._last_progress_t = now
                         _live.bump()  # push progress to the live panels as it changes
+                    stamp = xfer_stamp()
+                    if stamp is not None and stamp != last_stamp:
+                        job._last_progress_t = now  # worker heartbeat: alive, not stalled
+                        last_stamp = stamp
                     dt = now - last_t
                     if dt >= 1.0:
                         inst = max(0, job.done_bytes - last_b) / dt

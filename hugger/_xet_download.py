@@ -61,12 +61,13 @@ def _concurrency() -> int:
 
 
 def _read_timeout() -> int:
-    """Abort a file's stream if no chunk arrives for this long (seconds), so a
-    wedged CAS connection — the usual cause of a download going 'stale' on a big
-    repo once its token expires mid-stream — fails fast and is retried instead of
-    blocking forever. The unordered stream yields chunks in completion order, so
-    'no chunk' really means 'no network progress' (no head-of-line false
-    positives). HUGGER_XET_READ_TIMEOUT, default 60; 0 disables."""
+    """Abort a file's stream if no chunk arrives for this long (seconds) AND
+    xet's wire-transfer counter hasn't moved either (see the probe in
+    `_stream_one` — a big term on a slow link takes longer than this to deliver
+    while transferring the whole time). So a wedged CAS connection — the usual
+    cause of a download going 'stale' on a big repo once its token expires
+    mid-stream — fails fast and is retried instead of blocking forever.
+    HUGGER_XET_READ_TIMEOUT, default 60; 0 disables."""
     return _int_env("HUGGER_XET_READ_TIMEOUT", 60, lo=0)
 
 
@@ -79,11 +80,15 @@ def _retries() -> int:
 _SENTINEL = object()
 
 
-def _iter_timeout(gen, timeout: int):
+def _iter_timeout(gen, timeout: int, probe=None):
     """Yield from a blocking generator, raising TimeoutError if no item arrives
-    within `timeout` seconds. The producer runs in a daemon thread; on timeout we
-    abandon it (it's blocked on a dead socket and dies with the process) and let
-    the caller retry with a fresh group, resuming from bytes already on disk."""
+    within `timeout` seconds AND `probe` (when given) reports no other sign of
+    life. A large term on a slow link can legitimately take longer than the
+    timeout to complete while wire bytes flow the whole time — `probe()` returns
+    True in that case (it checks xet's transfer counter) and we keep waiting.
+    The producer runs in a daemon thread; on a real timeout we abandon it (it's
+    blocked on a dead socket and dies with the process) and let the caller retry
+    with a fresh group, resuming from bytes already on disk."""
     if not timeout:
         yield from gen
         return
@@ -102,6 +107,8 @@ def _iter_timeout(gen, timeout: int):
         try:
             item = q.get(timeout=timeout)
         except queue.Empty:
+            if probe is not None and probe():
+                continue  # no chunk yet, but bytes are moving on the wire
             raise TimeoutError(f"no data for {timeout}s (stream wedged)")
         if item is _SENTINEL:
             return
@@ -164,7 +171,23 @@ def _xfer_start(dest_dir: str | Path) -> None:
     with _xfer_lock:
         _xfer_total = 0
         _xfer_path = metadata.xfer_file(dest_dir)
-        _xfer_path.unlink(missing_ok=True)
+        _xfer_touch_locked()
+
+
+def _xfer_touch_locked() -> None:
+    if _xfer_path is not None:
+        try:
+            _xfer_path.write_text(str(_xfer_total))
+        except OSError:
+            pass
+
+
+def _xfer_touch() -> None:
+    """Rewrite the counter file so its mtime advances — the parent's stall
+    watchdog treats that as liveness even when no bytes have landed yet (e.g.
+    the per-file metadata enumeration before any transfer starts)."""
+    with _xfer_lock:
+        _xfer_touch_locked()
 
 
 def _xfer_sync(stream, last: int) -> int:
@@ -180,11 +203,7 @@ def _xfer_sync(stream, last: int) -> int:
         return last
     with _xfer_lock:
         _xfer_total += cur - last
-        if _xfer_path is not None:
-            try:
-                _xfer_path.write_text(str(_xfer_total))
-            except OSError:
-                pass
+        _xfer_touch_locked()
     return cur
 
 
@@ -230,8 +249,21 @@ def _stream_one(group, rel: str, file_hash: str, expected: int, dest_dir: str | 
                     stream = group.download_unordered_stream(
                         XetFileInfo(file_hash, expected), start=a, end=b)
                     xfer_seen = 0
+
+                    def probe():
+                        # Liveness for the read timeout: did wire bytes move since
+                        # the last look? (Also mirrors them to `.hugger.xfer`, so
+                        # the parent's stall watchdog sees the same liveness.)
+                        # Always False on a stock hf_xet wheel — the counter isn't
+                        # exposed, and the timeout behaves as before.
+                        nonlocal xfer_seen
+                        cur = _xfer_sync(stream, xfer_seen)
+                        moved = cur > xfer_seen
+                        xfer_seen = cur
+                        return moved
+
                     # Offsets are relative to the requested range start.
-                    for off, data in _iter_timeout(stream, _read_timeout()):
+                    for off, data in _iter_timeout(stream, _read_timeout(), probe=probe):
                         f.seek(a + off)
                         f.write(data)
                         db.add(a + off, a + off + len(data))
@@ -270,7 +302,8 @@ def _stream_resilient(make_group, rel: str, file_hash: str, expected: int,
             wait = min(2 ** i, 30)
             print(f"[xet] {rel}: {type(e).__name__}: {e} — retry {i + 1}/{attempts - 1} "
                   f"in {wait}s (resuming from disk)", file=sys.stderr, flush=True)
-            time.sleep(wait)
+            _xfer_touch()  # retrying IS liveness — don't let the parent's stall
+            time.sleep(wait)  # watchdog preempt in-process recovery
 
 
 def download_all(repo_id: str, revision: str, rels: list[str], dest_dir: str | Path,
@@ -286,13 +319,21 @@ def download_all(repo_id: str, revision: str, rels: list[str], dest_dir: str | P
     _xfer_start(dest_dir)
     xet_items: list[tuple[str, str, int, str]] = []  # (rel, file_hash, size, refresh_route)
     classic: list[str] = []
-    for rel in rels:
+
+    def fetch_meta(rel):
         meta = get_hf_file_metadata(hf_hub_url(repo_id, filename=rel, revision=revision), headers=headers)
-        xfd = getattr(meta, "xet_file_data", None)
-        if xfd is None:
-            classic.append(rel)
-        else:
-            xet_items.append((rel, xfd.file_hash, meta.size, xfd.refresh_route))
+        _xfer_touch()  # enumeration heartbeat: keep the parent's stall watchdog fed
+        return rel, meta
+
+    # Enumerate concurrently — sequentially this takes O(files) round-trips with
+    # zero byte progress, long enough on big repos to trip the 90s stall restart.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, max(1, len(rels)))) as ex:
+        for rel, meta in ex.map(fetch_meta, rels):
+            xfd = getattr(meta, "xet_file_data", None)
+            if xfd is None:
+                classic.append(rel)
+            else:
+                xet_items.append((rel, xfd.file_hash, meta.size, xfd.refresh_route))
 
     if xet_items:
         def task(rel, file_hash, size, refresh_route):
