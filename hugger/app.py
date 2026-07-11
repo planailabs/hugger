@@ -580,6 +580,9 @@ def jobs_body(notice: str | None = None):
         stats = [Span(f"{human_size(j.done_bytes)} / {human_size(j.total_bytes)}", cls="muted")]
         if j.status == "running" and j.rate > 0:
             stats.append(Span(f"· {human_rate(j.rate)}", cls="muted"))
+            if j.net_rate > 0:
+                stats.append(Span(f"· {human_rate(j.net_rate)} net", cls="muted",
+                                  title="actual network transfer rate (dedupe/cache hits count as transferred)"))
             if j.eta is not None:
                 eta = human_eta(j.eta)
                 stats.append(Span("· stale" if eta == "stale" else f"· ETA {eta}", cls="muted"))

@@ -1,0 +1,53 @@
+diff --git a/hf_xet/src/utils.rs b/hf_xet/src/utils.rs
+index 7a4b9f2..c1a771c 100644
+--- a/hf_xet/src/utils.rs
++++ b/hf_xet/src/utils.rs
+@@ -148,6 +148,8 @@ mod tests {
+             item_name: "f".into(),
+             total_bytes: 100,
+             bytes_completed: 42,
++            transfer_bytes: 0,
++            transfer_bytes_completed: 0,
+         };
+         assert_eq!(progress_display(Some(report)), "42/100");
+     }
+diff --git a/xet_data/src/progress_tracking/progress_types.rs b/xet_data/src/progress_tracking/progress_types.rs
+index 499b3a5..c27c65a 100644
+--- a/xet_data/src/progress_tracking/progress_types.rs
++++ b/xet_data/src/progress_tracking/progress_types.rs
+@@ -48,6 +48,8 @@ impl ItemProgress {
+             item_name: self.name.to_string(),
+             total_bytes,
+             bytes_completed,
++            transfer_bytes,
++            transfer_bytes_completed,
+         }
+     }
+ }
+@@ -380,6 +382,13 @@ pub struct ItemProgressReport {
+     pub item_name: String,
+     pub total_bytes: u64,
+     pub bytes_completed: u64,
++    /// Total network (transfer) bytes for this item, when known.
++    pub transfer_bytes: u64,
++    /// Network bytes fetched so far. Unlike `bytes_completed` — which for an
++    /// ordered download stream only advances when data is handed to the
++    /// consumer — this advances as bytes arrive off the wire (or hit the chunk
++    /// cache), making it a reliable liveness signal for stall detection.
++    pub transfer_bytes_completed: u64,
+ }
+ 
+ #[cfg(test)]
+diff --git a/xet_pkg/src/legacy/progress_tracking/callback_bridge.rs b/xet_pkg/src/legacy/progress_tracking/callback_bridge.rs
+index 941fa67..8075010 100644
+--- a/xet_pkg/src/legacy/progress_tracking/callback_bridge.rs
++++ b/xet_pkg/src/legacy/progress_tracking/callback_bridge.rs
+@@ -348,6 +348,8 @@ mod tests {
+             item_name: name.to_string(),
+             total_bytes,
+             bytes_completed,
++            transfer_bytes: 0,
++            transfer_bytes_completed: 0,
+         }
+     }
+ 

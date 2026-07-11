@@ -36,6 +36,11 @@
         # carries the `hugger` entry point.
         workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = ./.; };
         pyprojectOverlay = workspace.mkPyprojectOverlay { sourcePreference = "wheel"; };
+        # hf_xet built from source with our transfer-progress patch (see
+        # nix/hf-xet-patched.nix) — same 1.5.1 as uv.lock, so resolution is
+        # untouched; only the wheel bytes differ. Linux-only (darwin keeps the
+        # stock wheel); drop once upstream ships the fields.
+        hfXetWheel = pkgs.callPackage ./nix/hf-xet-patched.nix { inherit python; };
         pyprojectOverrides = _final: prev: {
           hugger = prev.hugger.overrideAttrs (old: {
             src = lib.cleanSourceWith {
@@ -44,6 +49,10 @@
                 let b = baseNameOf path;
                 in !(builtins.elem b [ ".venv" "result" ".hugger" ]);
             };
+          });
+        } // lib.optionalAttrs pkgs.stdenv.isLinux {
+          hf-xet = prev.hf-xet.overrideAttrs (_old: {
+            src = "${hfXetWheel}/${hfXetWheel.wheelName}";
           });
         };
         pythonSet = (pkgs.callPackage pyproject-nix.build.packages { inherit python; }).overrideScope
@@ -66,6 +75,9 @@
         packages = {
           default = hugger;
         } // nixpkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          # The patched hf_xet wheel by itself — for installing into a dev venv
+          # (`uv run` re-syncs to the stock wheel; see apps.default below).
+          hf-xet-wheel = hfXetWheel;
           # OCI image built with nix's native dockerTools — no Dockerfile/daemon.
           docker = pkgs.dockerTools.buildLayeredImage {
             name = "hugger";
@@ -156,7 +168,8 @@
           shellHook = ''
             echo "hugger dev shell — Python ${python.version} + uv $(uv --version | cut -d' ' -f2)"
             echo "  uv venv && uv pip install -e .   # install"
-            echo "  uv run hugger                    # run server"
+            echo "  uv run hugger                    # run server (stock hf_xet — no net rate)"
+            echo "  nix run                          # run server with the patched hf_xet wheel"
             echo "  uv run python tests/test_core.py && uv run python tests/test_api.py"
           '';
         };
@@ -207,15 +220,25 @@
         };
 
         # `nix run` — boots the server via uv (creates/uses .venv on first run).
+        # After the sync, re-apply the patched hf_xet wheel if the venv holds the
+        # stock one (`uv sync`/`uv run` always revert to uv.lock's wheel), then
+        # run with --no-sync so it isn't immediately clobbered again.
         apps.default = {
           type = "app";
-          program = toString (pkgs.writeShellScript "hugger-run" ''
+          program = toString (pkgs.writeShellScript "hugger-run" (''
             export PATH="${pkgs.uv}/bin:${python}/bin:$PATH"
             export UV_PYTHON="${python}/bin/python"
             export UV_PYTHON_DOWNLOADS=never
             cd "''${HUGGER_SRC:-.}"
-            exec uv run hugger
-          '');
+            uv sync
+          '' + pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+            if ! uv run --no-sync python -c 'import hf_xet, sys; sys.exit(0 if hasattr(hf_xet.ItemProgressReport, "transfer_bytes_completed") else 1)' 2>/dev/null; then
+              echo "installing patched hf_xet (transfer counters — see nix/hf-xet-patched.nix)"
+              uv pip install --force-reinstall --no-deps "${hfXetWheel}/${hfXetWheel.wheelName}"
+            fi
+          '' + ''
+            exec uv run --no-sync hugger
+          ''));
         };
       }) // {
       # Wire the module's package to the uv2nix build for the host's system, so

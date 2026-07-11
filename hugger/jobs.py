@@ -107,7 +107,8 @@ class Job:
     sha: str | None = None
     store_id: str | None = None
     src_store_id: str | None = None
-    rate: float = 0.0               # smoothed bytes/sec (runtime only)
+    rate: float = 0.0               # smoothed bytes/sec on disk (runtime only)
+    net_rate: float = 0.0           # smoothed wire bytes/sec from the Xet worker
     stalls: int = 0                 # auto-restarts due to staleness (runtime only)
     auto: bool = field(default=False, repr=False)  # verify auto-repairs bad files
     _stop: threading.Event = field(default_factory=threading.Event, repr=False)
@@ -152,6 +153,7 @@ class Job:
             "done_bytes": self.done_bytes, "percent": self.percent, "error": self.error,
             "store_id": self.store_id, "src_store_id": self.src_store_id,
             "rate": round(self.rate) if running else 0, "eta": self.eta, "stalls": self.stalls,
+            "net_rate": round(self.net_rate) if running else 0,
         }
 
 
@@ -532,6 +534,7 @@ class JobManager:
             # to show the full total. Clear any stale progress file first.
             base = metadata.state(dest, meta)["downloaded_bytes"]
             metadata.progress_file(dest).unlink(missing_ok=True)
+            metadata.xfer_file(dest).unlink(missing_ok=True)
             # Seed from on-disk progress so a resumed job shows real progress now.
             job.done_bytes = metadata.read_progress(dest, meta, base=base)
             job.persist()
@@ -539,7 +542,10 @@ class JobManager:
             def poll():
                 # Track on-disk progress, a smoothed transfer rate (EWMA over ~1s
                 # samples), and the time of the last byte gained (for stall detection).
+                # `.hugger.xfer` (cumulative wire bytes from the Xet worker, when the
+                # patched hf_xet exposes them) feeds a separate network-rate EWMA.
                 last_t = time.monotonic(); last_b = job.done_bytes
+                last_x = metadata.read_xfer(dest)
                 while not poll_stop.is_set():
                     prev = job.done_bytes
                     job.done_bytes = metadata.read_progress(dest, meta, base=base)
@@ -551,6 +557,12 @@ class JobManager:
                     if dt >= 1.0:
                         inst = max(0, job.done_bytes - last_b) / dt
                         job.rate = inst if job.rate <= 0 else 0.4 * inst + 0.6 * job.rate
+                        x = metadata.read_xfer(dest)
+                        if x is not None:
+                            xinst = max(0, x - (last_x or 0)) / dt
+                            job.net_rate = (xinst if job.net_rate <= 0
+                                            else 0.4 * xinst + 0.6 * job.net_rate)
+                            last_x = x
                         last_t = now; last_b = job.done_bytes
                     poll_stop.wait(1.0)
 
@@ -602,6 +614,7 @@ class JobManager:
             rc = proc.returncode
             poll_stop.set()
             metadata.progress_file(dest).unlink(missing_ok=True)
+            metadata.xfer_file(dest).unlink(missing_ok=True)
             if rc == 0:
                 self._cache_archive(job.repo_id, meta, dest, job.store_id)
                 state = metadata.state(dest, meta)

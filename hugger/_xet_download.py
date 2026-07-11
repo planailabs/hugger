@@ -148,6 +148,45 @@ def _new_group(refresh_route: str, headers: dict):
 _COMMIT_BYTES = 8 << 20
 _COMMIT_SECS = 5.0
 
+# Aggregate network (transfer) bytes across all streams of this worker process,
+# mirrored to `.hugger.xfer` so the parent can show a true wire rate. Fed from
+# hf_xet's per-stream transfer counter, which our patched build exposes on
+# ItemProgressReport (silently absent on a stock wheel — see nix/patches/).
+_xfer_lock = threading.Lock()
+_xfer_total = 0
+_xfer_path: Path | None = None
+
+
+def _xfer_start(dest_dir: str | Path) -> None:
+    """Reset the counter for a fresh run and point it at this model dir."""
+    from . import metadata
+    global _xfer_total, _xfer_path
+    with _xfer_lock:
+        _xfer_total = 0
+        _xfer_path = metadata.xfer_file(dest_dir)
+        _xfer_path.unlink(missing_ok=True)
+
+
+def _xfer_sync(stream, last: int) -> int:
+    """Fold the stream's transfer-counter growth since `last` into the shared
+    total and mirror it to disk. Returns the new per-stream watermark."""
+    global _xfer_total
+    try:
+        rep = stream.progress()
+    except Exception:
+        return last
+    cur = getattr(rep, "transfer_bytes_completed", None) if rep else None
+    if cur is None or cur <= last:
+        return last
+    with _xfer_lock:
+        _xfer_total += cur - last
+        if _xfer_path is not None:
+            try:
+                _xfer_path.write_text(str(_xfer_total))
+            except OSError:
+                pass
+    return cur
+
 
 def _stream_one(group, rel: str, file_hash: str, expected: int, dest_dir: str | Path) -> None:
     """Stream one Xet file through `group` into `<rel>.xetpart`, fetching only
@@ -190,6 +229,7 @@ def _stream_one(group, rel: str, file_hash: str, expected: int, dest_dir: str | 
                 for a, b in holes:
                     stream = group.download_unordered_stream(
                         XetFileInfo(file_hash, expected), start=a, end=b)
+                    xfer_seen = 0
                     # Offsets are relative to the requested range start.
                     for off, data in _iter_timeout(stream, _read_timeout()):
                         f.seek(a + off)
@@ -199,6 +239,8 @@ def _stream_one(group, rel: str, file_hash: str, expected: int, dest_dir: str | 
                         if pending >= _COMMIT_BYTES or (
                                 pending and time.monotonic() - last_commit >= _COMMIT_SECS):
                             checkpoint()
+                            xfer_seen = _xfer_sync(stream, xfer_seen)
+                    _xfer_sync(stream, xfer_seen)  # fold the stream's tail
                 if pending:
                     checkpoint()
         covered = db.covered()
@@ -241,6 +283,7 @@ def download_all(repo_id: str, revision: str, rels: list[str], dest_dir: str | P
     from huggingface_hub.utils import build_hf_headers
 
     headers = build_hf_headers(token=token)
+    _xfer_start(dest_dir)
     xet_items: list[tuple[str, str, int, str]] = []  # (rel, file_hash, size, refresh_route)
     classic: list[str] = []
     for rel in rels:
@@ -286,6 +329,7 @@ def download_file(repo_id: str, revision: str, rel: str, dest_dir: str | Path,
     xfd = getattr(meta, "xet_file_data", None)
     if xfd is None:
         return False  # not a Xet file — fall back to the classic download
+    _xfer_start(dest_dir)
     _stream_resilient(lambda: _new_group(xfd.refresh_route, headers),
                       rel, xfd.file_hash, meta.size, dest_dir)
     return True

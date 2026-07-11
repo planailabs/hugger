@@ -17,6 +17,7 @@ from . import _xet_ranges
 META_NAME = ".hugger.json"
 PROGRESS_NAME = ".hugger.progress"
 VERIFY_NAME = ".hugger.verify"
+XFER_NAME = ".hugger.xfer"
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -41,6 +42,20 @@ def progress_file(model_dir: Path | str) -> Path:
 
 def verify_file(model_dir: Path | str) -> Path:
     return Path(model_dir) / VERIFY_NAME
+
+
+def xfer_file(model_dir: Path | str) -> Path:
+    return Path(model_dir) / XFER_NAME
+
+
+def read_xfer(model_dir: Path | str) -> int | None:
+    """Cumulative network (transfer) bytes reported by the Xet worker for this
+    run, or None if unavailable (classic path, unpatched hf_xet, torn write).
+    Unlike file bytes, this counts wire bytes — dedupe/cache hits included."""
+    try:
+        return int(xfer_file(model_dir).read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
 
 
 def read_verify(model_dir: Path | str) -> dict:

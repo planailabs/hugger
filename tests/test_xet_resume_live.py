@@ -185,6 +185,24 @@ def test_range_correctness():
     assert bytes(buf) == ref.read_bytes()[start:end], "unordered ranged bytes must match"
 
 
+def test_transfer_counter_reported():
+    """With the patched hf_xet (transfer_bytes_completed on ItemProgressReport,
+    nix/patches/hf-xet-transfer-progress.patch), the worker mirrors cumulative
+    wire bytes to `.hugger.xfer` for the parent's net-rate display. Skips on a
+    stock wheel — the fields simply aren't there and nothing is written."""
+    if not ONLINE:
+        return _skip("test_transfer_counter_reported")
+    import hf_xet
+    if not hasattr(hf_xet.ItemProgressReport, "transfer_bytes_completed"):
+        print("skip test_transfer_counter_reported (stock hf_xet wheel, no patch)")
+        return
+    from hugger import metadata
+    with tempfile.TemporaryDirectory() as d:
+        assert xd.download_file(REPO, "main", XET_FILE, d, token=None) is True
+        n = metadata.read_xfer(d)
+        assert n is not None and n > 0, f"expected wire bytes in .hugger.xfer, got {n}"
+
+
 def test_non_xet_returns_false():
     if not ONLINE:
         return _skip("test_non_xet_returns_false")
