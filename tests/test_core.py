@@ -54,7 +54,9 @@ def test_human_eta():
     assert human_eta(45) == "45s"
     assert human_eta(200) == "3m 20s"
     assert human_eta(3840) == "1h 4m"
-    assert human_eta(365 * 24 * 3600) == "8760h 0m"      # exactly a year still shows
+    assert human_eta(47 * 3600) == "47h 0m"              # up to 2 days stays in hours
+    assert human_eta(49 * 3600 + 120) == "2d 1h"         # above 2 days: days + hours
+    assert human_eta(365 * 24 * 3600) == "365d 0h"       # exactly a year still shows
     assert human_eta(365 * 24 * 3600 + 1) == "stale"     # beyond a year is noise
 
 

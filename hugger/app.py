@@ -72,9 +72,9 @@ def human_rate(bytes_per_sec: float) -> str:
 
 
 def human_eta(seconds: int | None) -> str:
-    """Compact remaining-time, e.g. '45s', '3m 20s', '1h 4m'. Anything above a
-    year means the transfer is effectively not moving — show 'stale' instead of
-    a meaningless number."""
+    """Compact remaining-time, e.g. '45s', '3m 20s', '1h 4m', '5d 3h'. Anything
+    above a year means the transfer is effectively not moving — show 'stale'
+    instead of a meaningless number."""
     if seconds is None or seconds < 0:
         return ""
     if seconds > 365 * 24 * 3600:
@@ -85,7 +85,10 @@ def human_eta(seconds: int | None) -> str:
     if m < 60:
         return f"{m}m {s}s"
     h, m = divmod(m, 60)
-    return f"{h}h {m}m"
+    if h < 2 * 24:
+        return f"{h}h {m}m"
+    d, h = divmod(h, 24)
+    return f"{d}d {h}h"
 
 
 async def _ds_csrf_ok(req, sess) -> bool:
