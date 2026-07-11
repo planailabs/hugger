@@ -2,12 +2,14 @@
 
 Exercises hugger._xet_download against real Xet-backed files: a full download
 matches the classic path byte-for-byte, an interrupted download RESUMES from the
-on-disk `.xetpart` (only the missing tail is fetched), an over-long/garbage
-partial restarts cleanly, raw byte-ranges are exact, the flag disables the path,
-and non-Xet files fall through. Token refresh (token_refresh_url on the stream
-group) and `.xetpart` byte-resume work together: a fresh group on retry refreshes
-the token, then resumes from the bytes already on disk. Skips automatically when
-huggingface.co is unreachable or this hf_xet predates the streaming API.
+on-disk `.xetpart` (a legacy contiguous partial is migrated into the ranges
+sidecar; a holey partial fetches only its missing ranges), an over-long/garbage
+partial restarts cleanly, raw byte-ranges are exact on both the ordered and
+unordered streams, the flag disables the path, and non-Xet files fall through.
+Token refresh (token_refresh_url on the stream group) and range-resume work
+together: a fresh group on retry refreshes the token, then fetches only the
+holes. Skips automatically when huggingface.co is unreachable or this hf_xet
+predates the unordered streaming API.
 
     python tests/test_xet_resume_live.py
 """
@@ -23,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("HUGGER_HOME", tempfile.mkdtemp(prefix="hugger-xet-"))
 
 from hugger import _xet_download as xd  # noqa: E402
+from hugger import _xet_ranges as xr  # noqa: E402
 
 REPO = "hf-internal-testing/tiny-random-gpt2"
 XET_FILE = "pytorch_model.bin"      # ~3.5 MB, Xet-backed
@@ -77,12 +80,15 @@ def test_full_download_matches_classic():
         out = Path(d) / XET_FILE
         assert out.exists() and out.stat().st_size == ref.stat().st_size
         assert _sha(out) == _sha(ref)
-        assert not (Path(d) / (XET_FILE + xd.PART_SUFFIX)).exists()  # part renamed away
+        part = Path(d) / (XET_FILE + xd.PART_SUFFIX)
+        assert not part.exists()                  # part renamed away
+        assert not xr.db_path(part).exists()      # ranges sidecar cleaned up
 
 
 def test_resume_from_partial():
-    """Seed a real partial `.xetpart`, then resume: only the missing tail is
-    fetched (start=have) and the result matches the reference byte-for-byte."""
+    """Seed a real legacy (contiguous, no sidecar) partial `.xetpart`, then
+    resume: it is migrated into the ranges sidecar, only the missing tail is
+    fetched and the result matches the reference byte-for-byte."""
     if not ONLINE:
         return _skip("test_resume_from_partial")
     ref = _reference()
@@ -98,6 +104,39 @@ def test_resume_from_partial():
         out = Path(d) / XET_FILE
         assert out.stat().st_size == size
         assert _sha(out) == full, "resumed file must match the reference byte-for-byte"
+        assert not xr.db_path(part).exists()
+
+
+def test_resume_from_holey_partial():
+    """Seed a partial with a HOLE in the middle (sidecar records two ranges);
+    resume fetches only the missing ranges and the result is byte-exact."""
+    if not ONLINE:
+        return _skip("test_resume_from_holey_partial")
+    from huggingface_hub import get_hf_file_metadata, hf_hub_url
+    from huggingface_hub.utils import build_hf_headers
+
+    ref = _reference()
+    data = ref.read_bytes()
+    size = len(data)
+    meta = get_hf_file_metadata(hf_hub_url(REPO, filename=XET_FILE),
+                                headers=build_hf_headers())
+    with tempfile.TemporaryDirectory() as d:
+        part = Path(d) / (XET_FILE + xd.PART_SUFFIX)
+        a, b, c = size // 8, size // 4, size // 2  # have [0,a) and [b,c); rest missing
+        db = xr.RangeDB.open(part, meta.xet_file_data.file_hash, size)
+        with open(part, "wb") as f:
+            f.write(data[:a])
+            f.seek(b)
+            f.write(data[b:c])
+        db.add(0, a)
+        db.add(b, c)
+        db.commit()
+        db.close()
+        assert xd.download_file(REPO, "main", XET_FILE, d, token=None) is True
+        out = Path(d) / XET_FILE
+        assert out.stat().st_size == size
+        assert _sha(out) == _sha(ref), "holey resume must match the reference byte-for-byte"
+        assert not part.exists() and not xr.db_path(part).exists()
 
 
 def test_corrupt_overlong_partial_restarts():
@@ -134,6 +173,16 @@ def test_range_correctness():
     got = b"".join(grp.download_stream(info, start=start, end=end))
     assert len(got) == end - start, f"range returned {len(got)} bytes, want {end - start}"
     assert got == ref.read_bytes()[start:end], "ranged bytes must match the reference slice"
+
+    # Unordered stream: offsets are RELATIVE to the range start (what the
+    # torrent-style writer relies on); reassembled they must be byte-exact.
+    buf = bytearray(end - start)
+    total = 0
+    for off, chunk in grp.download_unordered_stream(info, start=start, end=end):
+        buf[off:off + len(chunk)] = chunk
+        total += len(chunk)
+    assert total == end - start, f"unordered range returned {total} bytes, want {end - start}"
+    assert bytes(buf) == ref.read_bytes()[start:end], "unordered ranged bytes must match"
 
 
 def test_non_xet_returns_false():

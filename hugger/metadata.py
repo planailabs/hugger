@@ -12,6 +12,8 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import _xet_ranges
+
 META_NAME = ".hugger.json"
 PROGRESS_NAME = ".hugger.progress"
 VERIFY_NAME = ".hugger.verify"
@@ -174,7 +176,11 @@ def progress_bytes(model_dir: Path | str, meta: dict) -> int:
                 pass
     for p in Path(model_dir).rglob("*.xetpart"):  # in-flight resumable Xet files
         try:
-            partial += p.stat().st_size
+            # Out-of-order parts have a ranges sidecar with the exact byte count
+            # (st_size would overstate a file with holes); legacy contiguous
+            # parts have no sidecar and st_size is exact.
+            covered = _xet_ranges.covered_bytes(p)
+            partial += covered if covered is not None else p.stat().st_size
         except OSError:
             pass
     return min(meta.get("total_size", 0) or (done + partial), done + partial)

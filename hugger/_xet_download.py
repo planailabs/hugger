@@ -1,12 +1,21 @@
-"""Resumable Xet downloads.
+"""Resumable Xet downloads, torrent-style.
 
 huggingface_hub's high-level download has no Xet resume: an interrupted file is
 re-fetched from scratch, and its on-disk chunk cache does NOT retain data chunks
 across runs (it's ~tens of KB even after a multi-MB download — shard/CAS metadata,
-not file data). So we drive hf_xet's lower-level byte-range stream
-(`XetDownloadStreamGroup.download_stream(file_info, start=N)`) ourselves and write
-to `<file>.xetpart`, renaming on completion — giving true byte-level resume from
-the bytes already on disk, independent of any cache.
+not file data). So we drive hf_xet's lower-level UNORDERED byte-range stream
+(`XetDownloadStreamGroup.download_unordered_stream`) ourselves: chunks arrive in
+completion order as `(offset, bytes)` and are written at their offsets into
+`<file>.xetpart`, with a SQLite sidecar (see `_xet_ranges`) recording which byte
+ranges are present. On completion the part is renamed and the sidecar removed.
+A retry — or a whole new run — fetches only the missing ranges.
+
+Why the unordered stream (vs the ordered one used before): the ordered iterator
+only yields the NEXT in-file chunk, while xet fetches many terms concurrently —
+so a slow first term looks identical to a wedged connection and defeats stall
+detection. With completion-order delivery, chunk arrival IS network liveness:
+the `_iter_timeout` watchdog only fires when nothing is actually moving, and
+nothing xet fetched ahead is thrown away on retry.
 
 Why it used to "go stale" on big repos, and how this avoids it:
   * The old code created ONE stream group and reused it for the whole (multi-hour)
@@ -15,7 +24,7 @@ Why it used to "go stale" on big repos, and how this avoids it:
     retry), so a token only has to outlive a single file/attempt.
   * A read-timeout watchdog (`_iter_timeout`) turns a wedged stream into an error
     instead of an infinite hang, and `_stream_resilient` retries with a fresh
-    group, resuming from the current `.xetpart` size — so even a single huge file
+    group, resuming from the ranges already on disk — so even a single huge file
     that outlives a token recovers on its own.
 
 Files that aren't Xet-backed return to the caller for the classic path.
@@ -31,6 +40,8 @@ import sys
 import threading
 import time
 from pathlib import Path
+
+from . import _xet_ranges
 
 PART_SUFFIX = ".xetpart"
 
@@ -50,10 +61,12 @@ def _concurrency() -> int:
 
 
 def _read_timeout() -> int:
-    """Abort a file's stream if no bytes arrive for this long (seconds), so a
+    """Abort a file's stream if no chunk arrives for this long (seconds), so a
     wedged CAS connection — the usual cause of a download going 'stale' on a big
     repo once its token expires mid-stream — fails fast and is retried instead of
-    blocking forever. HUGGER_XET_READ_TIMEOUT, default 60; 0 disables."""
+    blocking forever. The unordered stream yields chunks in completion order, so
+    'no chunk' really means 'no network progress' (no head-of-line false
+    positives). HUGGER_XET_READ_TIMEOUT, default 60; 0 disables."""
     return _int_env("HUGGER_XET_READ_TIMEOUT", 60, lo=0)
 
 
@@ -108,7 +121,9 @@ def available() -> bool:
                 get_xet_session, xet_headers_without_auth,
             )
             sess = get_xet_session()
-            _available = hasattr(sess, "new_download_stream_group") and hasattr(hf_xet, "XetFileInfo")
+            _available = (hasattr(sess, "new_download_stream_group")
+                          and hasattr(hf_xet, "XetFileInfo")
+                          and hasattr(hf_xet.XetDownloadStreamGroup, "download_unordered_stream"))
         except Exception:
             _available = False
     return _available
@@ -127,48 +142,81 @@ def _new_group(refresh_route: str, headers: dict):
     )
 
 
+# Fsync the part and commit its ranges after this many new bytes — or after
+# _COMMIT_SECS with any pending bytes, so the parent's progress poll (and its
+# 90s stall watchdog) keeps advancing even on slow links.
+_COMMIT_BYTES = 8 << 20
+_COMMIT_SECS = 5.0
+
+
 def _stream_one(group, rel: str, file_hash: str, expected: int, dest_dir: str | Path) -> None:
-    """Stream one Xet file through `group` into `<rel>.xetpart`, resuming from its
-    current size, then rename to the final name. Raises on a size mismatch (the
-    partial is left on disk for the next attempt)."""
+    """Stream one Xet file through `group` into `<rel>.xetpart`, fetching only
+    the byte ranges its sidecar doesn't already record, then rename to the final
+    name. Raises on incomplete coverage (partial + sidecar are left on disk for
+    the next attempt)."""
     from hf_xet import XetFileInfo
 
     final = Path(dest_dir) / rel
     final.parent.mkdir(parents=True, exist_ok=True)
-    if final.exists() and final.stat().st_size == expected:
-        return  # already complete
-
     part = final.with_name(final.name + PART_SUFFIX)
-    have = part.stat().st_size if part.exists() else 0
-    if have > expected:  # corrupt/over-long partial — start over
-        part.unlink()
-        have = 0
+    if final.exists() and final.stat().st_size == expected:
+        # Already complete; drop leftovers (e.g. a crash between rename and
+        # sidecar removal on a previous run).
+        part.unlink(missing_ok=True)
+        _xet_ranges.db_path(part).unlink(missing_ok=True)
+        return
 
-    written = have
-    if have < expected:
-        # Flush to the OS every ~1 MB so the parent's progress poll (which reads
-        # this file's on-disk size) keeps advancing — an unflushed BufferedWriter
-        # makes an actively-transferring file look stalled for long stretches.
-        flushed = have
-        stream = group.download_stream(XetFileInfo(file_hash, expected), start=have)
-        with open(part, "ab") as f:
-            for chunk in _iter_timeout(stream, _read_timeout()):
-                f.write(chunk)
-                written += len(chunk)
-                if written - flushed >= 1 << 20:
+    db = _xet_ranges.RangeDB.open(part, file_hash, expected)
+    try:
+        part.touch()  # r+b needs the file to exist (also covers expected == 0)
+        holes = db.missing(expected)
+        if holes:
+            # ponytail: no preallocation/sparse flags — offset writes leave holes
+            # sparse on POSIX; NTFS zero-fills gaps (wasted writes, still correct:
+            # the sidecar, not st_size, says which bytes are real).
+            with open(part, "r+b") as f:
+                pending = 0
+                last_commit = time.monotonic()
+
+                def checkpoint():
+                    # Data must be durable BEFORE the sidecar claims it, so a
+                    # crash can only under-claim (lost tail is re-fetched).
+                    nonlocal pending, last_commit
                     f.flush()
-                    flushed = written
-    if written != expected:
-        raise RuntimeError(f"xet download size mismatch for {rel}: {written} != {expected}")
-    part.replace(final)
+                    os.fsync(f.fileno())
+                    db.commit()
+                    pending, last_commit = 0, time.monotonic()
+
+                for a, b in holes:
+                    stream = group.download_unordered_stream(
+                        XetFileInfo(file_hash, expected), start=a, end=b)
+                    # Offsets are relative to the requested range start.
+                    for off, data in _iter_timeout(stream, _read_timeout()):
+                        f.seek(a + off)
+                        f.write(data)
+                        db.add(a + off, a + off + len(data))
+                        pending += len(data)
+                        if pending >= _COMMIT_BYTES or (
+                                pending and time.monotonic() - last_commit >= _COMMIT_SECS):
+                            checkpoint()
+                if pending:
+                    checkpoint()
+        covered = db.covered()
+        if covered != expected:
+            raise RuntimeError(f"xet download incomplete for {rel}: {covered} != {expected}")
+        part.replace(final)
+        db.finalize()
+    finally:
+        db.close()
 
 
 def _stream_resilient(make_group, rel: str, file_hash: str, expected: int,
                       dest_dir: str | Path) -> None:
     """Stream one file, retrying on transient failure (timeout / dropped CAS
     connection / expired token) with a FRESH group each attempt and resuming from
-    the bytes already in `.xetpart`. A short-lived per-file group avoids the
-    multi-hour token expiry that wedges a single long-lived shared group."""
+    the ranges already recorded for `.xetpart`. A short-lived per-file group
+    avoids the multi-hour token expiry that wedges a single long-lived shared
+    group."""
     attempts = _retries() + 1
     for i in range(attempts):
         try:

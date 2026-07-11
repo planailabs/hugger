@@ -11,6 +11,7 @@ system="$(nix eval --impure --raw --expr 'builtins.currentSystem' 2>/dev/null ||
 
 echo "== python unit + integration tests =="
 python tests/test_core.py
+python tests/test_xet_ranges.py
 python tests/test_api.py
 
 echo "== live HuggingFace Hub tests (skips if offline) =="
