@@ -48,6 +48,16 @@ def test_human_size():
     assert human_size(5 * 1024 * 1024) == "5.0 MB"
 
 
+def test_human_eta():
+    from hugger.app import human_eta
+    assert human_eta(None) == "" and human_eta(-1) == ""
+    assert human_eta(45) == "45s"
+    assert human_eta(200) == "3m 20s"
+    assert human_eta(3840) == "1h 4m"
+    assert human_eta(365 * 24 * 3600) == "8760h 0m"      # exactly a year still shows
+    assert human_eta(365 * 24 * 3600 + 1) == "stale"     # beyond a year is noise
+
+
 def test_store_repo_path_cross_platform():
     p = jobs.store_repo_path("/data", "org/model")
     assert p.parts[-2:] == ("org", "model")  # uses OS separator, not literal "/"

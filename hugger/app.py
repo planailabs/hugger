@@ -72,9 +72,13 @@ def human_rate(bytes_per_sec: float) -> str:
 
 
 def human_eta(seconds: int | None) -> str:
-    """Compact remaining-time, e.g. '45s', '3m 20s', '1h 4m'."""
+    """Compact remaining-time, e.g. '45s', '3m 20s', '1h 4m'. Anything above a
+    year means the transfer is effectively not moving — show 'stale' instead of
+    a meaningless number."""
     if seconds is None or seconds < 0:
         return ""
+    if seconds > 365 * 24 * 3600:
+        return "stale"
     if seconds < 60:
         return f"{seconds}s"
     m, s = divmod(seconds, 60)
@@ -574,7 +578,8 @@ def jobs_body(notice: str | None = None):
         if j.status == "running" and j.rate > 0:
             stats.append(Span(f"· {human_rate(j.rate)}", cls="muted"))
             if j.eta is not None:
-                stats.append(Span(f"· ETA {human_eta(j.eta)}", cls="muted"))
+                eta = human_eta(j.eta)
+                stats.append(Span("· stale" if eta == "stale" else f"· ETA {eta}", cls="muted"))
         if j.stalls:
             stats.append(Span(f"· restarted {j.stalls}×", cls="badge warn",
                               title="auto-restarted after stalling"))
