@@ -21,7 +21,7 @@ os.environ["HUGGER_ARCHIVE_DIR"] = str(Path(_TMP) / "archives")
 from hugger import hub, store, jobs  # noqa: E402
 
 # A very small public model used for a real end-to-end download.
-TINY = "56m/Dumb"
+TINY = "hf-internal-testing/tiny-random-bert"
 
 
 def _online() -> bool:
