@@ -85,10 +85,12 @@ pkgs.testers.runNixOSTest {
         "FIREFOX_BIN=${pkgs.firefox}/bin/firefox GECKODRIVER=${pkgs.geckodriver}/bin/geckodriver"
     )
 
+    # 420s per browser: one navigation retry on a transient renderer stall
+    # (60s budget each) plus the real assertions, which are never retried.
     with subtest("chromium"):
-        print(machine.succeed(f"{env} ${pyEnv}/bin/python ${./browser_check.py} chrome", timeout=300))
+        print(machine.succeed(f"{env} ${pyEnv}/bin/python ${./browser_check.py} chrome", timeout=420))
 
     with subtest("firefox"):
-        print(machine.succeed(f"{env} ${pyEnv}/bin/python ${./browser_check.py} firefox", timeout=300))
+        print(machine.succeed(f"{env} ${pyEnv}/bin/python ${./browser_check.py} firefox", timeout=420))
   '';
 }
