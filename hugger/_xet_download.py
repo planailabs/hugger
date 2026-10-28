@@ -41,7 +41,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import _xet_ranges
+from . import _diskwatch, _xet_ranges
 
 PART_SUFFIX = ".xetpart"
 
@@ -177,7 +177,8 @@ def _xfer_start(dest_dir: str | Path) -> None:
 def _xfer_touch_locked() -> None:
     if _xfer_path is not None:
         try:
-            _xfer_path.write_text(str(_xfer_total))
+            with _diskwatch.busy():
+                _xfer_path.write_text(str(_xfer_total))
         except OSError:
             pass
 
@@ -224,15 +225,19 @@ def _stream_one(group, rel: str, file_hash: str, expected: int, dest_dir: str | 
         _xet_ranges.db_path(part).unlink(missing_ok=True)
         return
 
-    db = _xet_ranges.RangeDB.open(part, file_hash, expected)
+    with _diskwatch.busy():
+        db = _xet_ranges.RangeDB.open(part, file_hash, expected)
     try:
-        part.touch()  # r+b needs the file to exist (also covers expected == 0)
+        with _diskwatch.busy():
+            part.touch()  # r+b needs the file to exist (also covers expected == 0)
         holes = db.missing(expected)
         if holes:
             # ponytail: no preallocation/sparse flags — offset writes leave holes
             # sparse on POSIX; NTFS zero-fills gaps (wasted writes, still correct:
             # the sidecar, not st_size, says which bytes are real).
-            with open(part, "r+b") as f:
+            with _diskwatch.busy():
+                f = open(part, "r+b")
+            with f:
                 pending = 0
                 last_commit = time.monotonic()
 
@@ -240,9 +245,10 @@ def _stream_one(group, rel: str, file_hash: str, expected: int, dest_dir: str | 
                     # Data must be durable BEFORE the sidecar claims it, so a
                     # crash can only under-claim (lost tail is re-fetched).
                     nonlocal pending, last_commit
-                    f.flush()
-                    os.fsync(f.fileno())
-                    db.commit()
+                    with _diskwatch.busy():
+                        f.flush()
+                        os.fsync(f.fileno())
+                        db.commit()
                     pending, last_commit = 0, time.monotonic()
 
                 for a, b in holes:
@@ -264,8 +270,9 @@ def _stream_one(group, rel: str, file_hash: str, expected: int, dest_dir: str | 
 
                     # Offsets are relative to the requested range start.
                     for off, data in _iter_timeout(stream, _read_timeout(), probe=probe):
-                        f.seek(a + off)
-                        f.write(data)
+                        with _diskwatch.busy():
+                            f.seek(a + off)
+                            f.write(data)
                         db.add(a + off, a + off + len(data))
                         pending += len(data)
                         if pending >= _COMMIT_BYTES or (
@@ -278,8 +285,9 @@ def _stream_one(group, rel: str, file_hash: str, expected: int, dest_dir: str | 
         covered = db.covered()
         if covered != expected:
             raise RuntimeError(f"xet download incomplete for {rel}: {covered} != {expected}")
-        part.replace(final)
-        db.finalize()
+        with _diskwatch.busy():
+            part.replace(final)
+            db.finalize()
     finally:
         db.close()
 

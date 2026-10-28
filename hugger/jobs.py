@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import traceback
 import threading
 import time
@@ -25,7 +26,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import _live, hub, metadata, store, util
+from . import _diskwatch, _live, hub, metadata, store, util
 
 _dir_size = util.dir_size  # kept for tests/back-compat
 
@@ -44,7 +45,8 @@ MAX_ACTIVE = _int_env("HUGGER_MAX_ACTIVE", 1, lo=1)
 # the next download — one verify can run adjacent to one transfer.
 MAX_VERIFY = _int_env("HUGGER_MAX_VERIFY", 1, lo=1)
 # A running download making no progress for this many seconds is considered
-# stalled and its worker is restarted in place (0 disables).
+# stalled and its worker is restarted in place (0 disables). Disk lag on the
+# store (see _diskwatch) is not a stall and never triggers a restart.
 STALE_SECS = float(os.environ.get("HUGGER_STALE_SECS", "1800") or 0)
 
 
@@ -514,6 +516,10 @@ class JobManager:
     # --- workers ----------------------------------------------------------
     def _run_download(self, job: Job) -> None:
         poll_stop = threading.Event()
+        # Worker disk heartbeat on the LOCAL temp dir (not the store, which may be
+        # the very disk that's lagging).
+        hb_path = Path(tempfile.gettempdir()) / f"hugger-{job.id}.diskbeat"
+        disk = _diskwatch.Watch(hb_path)
         try:
             if job._stop.is_set():
                 job.status = "paused"; job.persist(); return
@@ -559,12 +565,14 @@ class JobManager:
                 last_stamp = xfer_stamp()
                 while not poll_stop.is_set():
                     prev = job.done_bytes
-                    job.done_bytes = metadata.read_progress(dest, meta, base=base)
+                    with disk.reading():
+                        job.done_bytes = metadata.read_progress(dest, meta, base=base)
+                        stamp = xfer_stamp()
+                        x = metadata.read_xfer(dest)
                     now = time.monotonic()
                     if job.done_bytes != prev:
                         job._last_progress_t = now
                         _live.bump()  # push progress to the live panels as it changes
-                    stamp = xfer_stamp()
                     if stamp is not None and stamp != last_stamp:
                         job._last_progress_t = now  # worker heartbeat: alive, not stalled
                         last_stamp = stamp
@@ -572,7 +580,6 @@ class JobManager:
                     if dt >= 1.0:
                         inst = max(0, job.done_bytes - last_b) / dt
                         job.rate = inst if job.rate <= 0 else 0.4 * inst + 0.6 * job.rate
-                        x = metadata.read_xfer(dest)
                         if x is not None:
                             xinst = max(0, x - (last_x or 0)) / dt
                             job.net_rate = (xinst if job.net_rate <= 0
@@ -591,6 +598,7 @@ class JobManager:
                 # doesn't bloat / fill another filesystem and stays with the data.
                 # (We pass the token explicitly, so HF_HOME isn't used for auth.)
                 env["HF_HOME"] = str(Path(st["path"]) / ".hf")
+                env[_diskwatch.ENV] = str(hb_path)
                 # NOTE: do NOT disable Xet here (see AGENTS.md). Xet is the fast default
                 # transfer. Progress is synced from hf's tqdm bytes bar; on the classic
                 # path .incomplete files also let read_progress reflect bytes-on-disk.
@@ -602,6 +610,7 @@ class JobManager:
             proc = launch()
             job._proc = proc
             job._last_progress_t = time.monotonic()
+            lag_logged = False
             while proc.poll() is None:
                 if self._shutting_down:
                     return  # shutdown() persisted us as queued; resume on restart
@@ -613,6 +622,17 @@ class JobManager:
                 if job._stop.is_set():
                     _terminate(proc)
                     job.status = "paused"; job.persist(); return
+                lag = disk.lagging()
+                if lag:
+                    # Blocked on the store disk (e.g. a FUSE mount), not wedged: a
+                    # fresh worker would block on the same disk, so just wait.
+                    job._last_progress_t = time.monotonic()
+                    if not lag_logged and lag >= STALE_SECS / 2:
+                        print(f"[hugger] {job.repo_id}: store disk lagging {lag:.0f}s "
+                              "— waiting, not restarting", file=sys.stderr, flush=True)
+                        lag_logged = True
+                elif lag_logged:
+                    lag_logged = False
                 if STALE_SECS and time.monotonic() - job._last_progress_t > STALE_SECS:
                     # No bytes for too long: the transfer is wedged. Restart the
                     # worker in place — it resumes from the bytes already on disk.
@@ -659,6 +679,7 @@ class JobManager:
             job.status = "error"; job.error = f"{type(e).__name__}: {e}"; job.persist()
         finally:
             poll_stop.set()
+            hb_path.unlink(missing_ok=True)
             if not self._shutting_down:
                 self._schedule()  # a slot freed — start the next queued job
 

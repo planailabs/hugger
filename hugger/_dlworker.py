@@ -14,7 +14,7 @@ from pathlib import Path
 
 from tqdm.auto import tqdm as base_tqdm
 
-from . import _xet_download, hub, metadata
+from . import _diskwatch, _xet_download, hub, metadata
 
 
 class _ProgressTqdm(base_tqdm):
@@ -39,7 +39,7 @@ class _ProgressTqdm(base_tqdm):
             return
         _ProgressTqdm._last = now
         try:
-            with open(_ProgressTqdm.path, "w") as f:
+            with _diskwatch.busy(), open(_ProgressTqdm.path, "w") as f:
                 f.write(f"{int(self.n)} {int(self.total or 0)}")
         except OSError:
             pass
@@ -47,6 +47,7 @@ class _ProgressTqdm(base_tqdm):
 
 def main() -> int:
     repo_id, revision, dest = sys.argv[1], sys.argv[2], sys.argv[3]
+    _diskwatch.start()
     meta = metadata.read(dest)
     allow = meta.get("selected") if meta else None
     pf = metadata.progress_file(dest)

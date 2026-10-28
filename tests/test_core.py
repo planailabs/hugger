@@ -48,6 +48,52 @@ def test_human_size():
     assert human_size(5 * 1024 * 1024) == "5.0 MB"
 
 
+def test_diskwatch_lag_is_not_a_stall():
+    """A worker disk call blocked >= LAG_SECS (FUSE lag) reads as lag via the
+    heartbeat; brief I/O, a stale heartbeat, or no I/O at all do not."""
+    import threading
+    import time
+    from hugger import _diskwatch as dw
+
+    old = dw.LAG_SECS, dw.BEAT_SECS
+    dw.LAG_SECS, dw.BEAT_SECS = 0.2, 0.05
+    try:
+        hb = Path(tempfile.mkdtemp()) / "beat"
+        os.environ[dw.ENV] = str(hb)
+        dw.start()
+        w = dw.Watch(hb)
+        time.sleep(0.15)
+        assert w.lagging() == 0  # heartbeat alive, nothing in flight
+
+        release = threading.Event()
+
+        def stuck_write():
+            with dw.busy():
+                release.wait()
+
+        t = threading.Thread(target=stuck_write); t.start()
+        time.sleep(0.4)
+        assert w.lagging() >= 0.2  # blocked disk call, fresh heartbeat -> lag
+        release.set(); t.join(); time.sleep(0.15)
+        assert w.lagging() == 0  # call finished -> no lag
+
+        # A stale heartbeat (worker frozen) never counts, whatever it claims.
+        frozen = dw.Watch(hb.with_name("frozen"))
+        frozen.path.write_text("7 999")
+        assert frozen.lagging() == 999  # first sighting is fresh
+        time.sleep(3 * dw.BEAT_SECS + 0.05)
+        assert frozen.lagging() == 0
+
+        # The parent's own blocked store read counts as lag too.
+        with w.reading():
+            time.sleep(0.25)
+            assert w.lagging() >= 0.2
+        assert w.lagging() == 0
+    finally:
+        dw.LAG_SECS, dw.BEAT_SECS = old
+        os.environ.pop(dw.ENV, None)
+
+
 def test_iter_timeout_probe():
     """The stream watchdog only raises when no item arrives AND the liveness
     probe says nothing is moving; while the probe reports wire progress it keeps
