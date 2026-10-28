@@ -17,7 +17,7 @@ rule is only that hugger's own code/config must not force it off.
 
 ## Patched hf_xet (transfer counters)
 
-Linux nix builds compile hf_xet 1.5.1 from source with
+Linux nix builds compile hf_xet 1.7.0 from source with
 `nix/patches/hf-xet-transfer-progress.patch` (see `nix/hf-xet-patched.nix`),
 exposing `transfer_bytes{,_completed}` on `ItemProgressReport` — hugger's
 net-rate display (`.hugger.xfer` → `Job.net_rate`) reads them. All consuming

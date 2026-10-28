@@ -1,16 +1,16 @@
-# hf_xet 1.5.1 built from source with nix/patches/hf-xet-transfer-progress.patch,
+# hf_xet 1.7.0 built from source with nix/patches/hf-xet-transfer-progress.patch,
 # which exposes per-stream network transfer counters (transfer_bytes /
 # transfer_bytes_completed) on ItemProgressReport — hugger uses them to show a
 # true wire rate. Drop this (and the flake's hf-xet src override) once an
 # upstream hf_xet release ships the equivalent change.
 #
 # Output: a directory holding the single built wheel; `passthru.wheelName` is
-# its deterministic filename (maturin --compatibility linux + abi3-py37).
+# its deterministic filename (maturin --compatibility linux + abi3-py38).
 { lib, stdenv, fetchFromGitHub, rustPlatform, cargo, rustc, maturin, python }:
 
 let
-  version = "1.5.1";
-  wheelName = "hf_xet-${version}-cp37-abi3-linux_${stdenv.hostPlatform.parsed.cpu.name}.whl";
+  version = "1.7.0";
+  wheelName = "hf_xet-${version}-cp38-abi3-linux_${stdenv.hostPlatform.parsed.cpu.name}.whl";
 in
 stdenv.mkDerivation {
   pname = "hf-xet-wheel";
@@ -20,7 +20,7 @@ stdenv.mkDerivation {
     owner = "huggingface";
     repo = "xet-core";
     rev = "v${version}";
-    hash = "sha256-TqSErydAOaHzCN7qglO/aqMF8BWYXvEv09adhxTwny0=";
+    hash = "sha256-7j4vClUaEKri3Uu8hv8IEqJCDar0xR8RBxPJbP1sZFg=";
   };
 
   patches = [ ./patches/hf-xet-transfer-progress.patch ];
@@ -29,7 +29,7 @@ stdenv.mkDerivation {
   # its own committed Cargo.lock — that's the one to vendor.
   cargoRoot = "hf_xet";
   cargoDeps = rustPlatform.importCargoLock {
-    # Copy of hf_xet/Cargo.lock at v1.5.1 (kept in-repo so vendoring needs no
+    # Copy of hf_xet/Cargo.lock at v1.7.0 (kept in-repo so vendoring needs no
     # import-from-derivation).
     lockFile = ./hf-xet-Cargo.lock;
   };

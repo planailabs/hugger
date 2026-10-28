@@ -9,7 +9,7 @@
     xzar.inputs.nixpkgs.follows = "nixpkgs";
 
     # Build the app straight from uv.lock so the store gets the exact pinned
-    # versions (hf 1.21 / hf-xet 1.5.1) rather than nixpkgs' older ones — the
+    # versions (hf 2.3 / hf-xet 1.7.0) rather than nixpkgs' older ones — the
     # resumable-Xet path needs hf_xet's byte-range streaming API.
     pyproject-nix.url = "github:pyproject-nix/pyproject.nix";
     pyproject-nix.inputs.nixpkgs.follows = "nixpkgs";
@@ -37,7 +37,7 @@
         workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = ./.; };
         pyprojectOverlay = workspace.mkPyprojectOverlay { sourcePreference = "wheel"; };
         # hf_xet built from source with our transfer-progress patch (see
-        # nix/hf-xet-patched.nix) — same 1.5.1 as uv.lock, so resolution is
+        # nix/hf-xet-patched.nix) — same 1.7.0 as uv.lock, so resolution is
         # untouched; only the wheel bytes differ. Linux-only (darwin keeps the
         # stock wheel); drop once upstream ships the fields.
         hfXetWheel = pkgs.callPackage ./nix/hf-xet-patched.nix { inherit python; };
@@ -242,7 +242,7 @@
         };
       }) // {
       # Wire the module's package to the uv2nix build for the host's system, so
-      # NixOS deployments get the same hf 1.21 / hf-xet 1.5.1 (resumable Xet) as
+      # NixOS deployments get the same hf 2.3 / hf-xet 1.7.0 (resumable Xet) as
       # the docker image. mkDefault so users can still override.
       nixosModules.default = { pkgs, lib, ... }: {
         imports = [ ./nixos/module.nix ];

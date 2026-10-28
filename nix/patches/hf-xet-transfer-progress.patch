@@ -12,7 +12,7 @@ index 7a4b9f2..c1a771c 100644
          assert_eq!(progress_display(Some(report)), "42/100");
      }
 diff --git a/xet_data/src/progress_tracking/progress_types.rs b/xet_data/src/progress_tracking/progress_types.rs
-index 499b3a5..c27c65a 100644
+index 78d6af2..015a77d 100644
 --- a/xet_data/src/progress_tracking/progress_types.rs
 +++ b/xet_data/src/progress_tracking/progress_types.rs
 @@ -48,6 +48,8 @@ impl ItemProgress {
@@ -24,7 +24,7 @@ index 499b3a5..c27c65a 100644
          }
      }
  }
-@@ -380,6 +382,13 @@ pub struct ItemProgressReport {
+@@ -663,6 +665,13 @@ pub struct ItemProgressReport {
      pub item_name: String,
      pub total_bytes: u64,
      pub bytes_completed: u64,
@@ -39,10 +39,10 @@ index 499b3a5..c27c65a 100644
  
  #[cfg(test)]
 diff --git a/xet_pkg/src/legacy/progress_tracking/callback_bridge.rs b/xet_pkg/src/legacy/progress_tracking/callback_bridge.rs
-index 941fa67..8075010 100644
+index 0e737b6..70e2152 100644
 --- a/xet_pkg/src/legacy/progress_tracking/callback_bridge.rs
 +++ b/xet_pkg/src/legacy/progress_tracking/callback_bridge.rs
-@@ -348,6 +348,8 @@ mod tests {
+@@ -349,6 +349,8 @@ mod tests {
              item_name: name.to_string(),
              total_bytes,
              bytes_completed,
