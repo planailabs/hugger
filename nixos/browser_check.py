@@ -30,6 +30,19 @@ TOKEN = os.environ["HUGGER_TOKEN"]
 EXAMPLE = "HuggingFaceTB/SmolLM2-135M-Instruct"  # from the user's example URL
 MODEL = "test-org/tiny-model"                     # the one our fake hub can serve
 PAGE_LOAD_TIMEOUT = 60                            # seconds, per navigation attempt
+NAV_ATTEMPTS = 3                                  # first try + two retries
+ERROR_URLS = ("chrome-error://", "about:neterror")  # a "loaded" error page is a failed navigation
+# Chrome and Firefox paint a network error *inside* a normal-looking document, and
+# Selenium then reports the failed URL (not `chrome-error://`) as current_url — so
+# the error has to be recognised from its own DOM, which is stable in both engines.
+ERROR_PAGE_PROBE = r"""
+var b = document.body;
+if (!b) return "";
+var err = document.querySelector('#main-frame-error, #errorPageContainer, .neterror');
+var text = (b.innerText || '').trim();
+if (!err && !/\bERR_[A-Z0-9_]+\b/.test(text)) return "";
+return text.slice(0, 400) || '(blank error page)';
+"""
 DRIVER_LOG = "/tmp/chromedriver-hugger.log"       # echoed into the test log on failure
 
 
@@ -119,6 +132,14 @@ def diagnose(driver, which, label):
                 "return b ? b.outerHTML : null;"
             ) or "")[:600],
         ),
+        # Visible text: on a browser error page this is the only place the real
+        # cause (ERR_CONNECTION_REFUSED / ERR_TIMED_OUT / ERR_CERT_*) appears.
+        (
+            "page text",
+            lambda: (driver.execute_script(
+                "return (document.body && document.body.innerText || '').trim()"
+            ) or "")[:600],
+        ),
     )
     for name, probe in probes:
         try:
@@ -128,29 +149,65 @@ def diagnose(driver, which, label):
     _print_driver_tail(which)
 
 
-def navigate(driver, url, which, label):
-    """Load `url`, retrying once if the renderer stalls past the page-load budget.
+def error_page_text(driver):
+    """Return the browser's own error-page text when the last nav did not load.
 
-    The browser VM shares a CI runner with the other VM checks, so a heavily
-    loaded runner can starve the renderer and make `driver.get` time out even
-    though the (local, tiny) page is fine. That is a transient: retry once and
-    keep the assertions themselves strict. A real product failure still fails --
-    the retry only covers the navigation step, never the extension behaviour.
+    A stalled renderer (or a starved network service) does not always raise: the
+    navigation can "succeed" and settle on a network-error document. That document
+    carries the real cause (`ERR_CONNECTION_REFUSED`, `ERR_TIMED_OUT`,
+    `ERR_CERT_*`, ...) as visible text, which Selenium never surfaces. Returns ""
+    for a genuinely loaded page.
     """
-    for attempt in (1, 2):
+    try:
+        url = driver.current_url or ""
+    except Exception:  # noqa: BLE001 - diagnostics/detection must never mask the error
+        return ""
+    if url.startswith(ERROR_URLS):
+        try:
+            body = driver.execute_script(
+                "return (document.body && document.body.innerText || '').trim()"
+            )
+        except Exception:  # noqa: BLE001
+            body = ""
+        return body or f"(empty error page at {url})"
+    # Selenium can report the *failed* URL here, so fall back to the error DOM.
+    try:
+        return driver.execute_script(ERROR_PAGE_PROBE) or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def navigate(driver, url, which, label):
+    """Load `url`, retrying a transient stall that no assertion should absorb.
+
+    The browser VM shares a CI runner with the other VM checks; a loaded runner
+    can starve the renderer so `driver.get` raises `Timed out receiving message
+    from renderer`, or starve the network service so the navigation settles on an
+    error page instead of the (local, tiny) fake hub. Both are the same transient
+    and get the same bounded retry; a real product failure still fails, because
+    every assertion runs exactly once and is never retried.
+    """
+    reason = "not attempted"
+    for attempt in range(1, NAV_ATTEMPTS + 1):
         try:
             driver.get(url)
-            return
+            err = error_page_text(driver)
+            if not err:
+                return
+            reason = f"landed on the browser error page: {err!r}"
         except TimeoutException as e:
-            print(
-                f"[{which}] navigation to {url} timed out "
-                f"(attempt {attempt}/2, {PAGE_LOAD_TIMEOUT}s): {e}",
-                flush=True,
-            )
-            if attempt == 2:
-                diagnose(driver, which, label)
-                raise
+            reason = f"navigation timed out: {e}"
+        print(
+            f"[{which}] navigation to {url} failed "
+            f"(attempt {attempt}/{NAV_ATTEMPTS}, {PAGE_LOAD_TIMEOUT}s budget): {reason}",
+            flush=True,
+        )
+        if attempt < NAV_ATTEMPTS:
             time.sleep(2)
+    diagnose(driver, which, label)
+    raise AssertionError(
+        f"could not load {url} after {NAV_ATTEMPTS} attempts: {reason}"
+    )
 
 
 def wait_for_button(driver, wait, which, label):

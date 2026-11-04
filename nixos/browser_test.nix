@@ -67,6 +67,16 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_unit("hugger.service")
     machine.wait_for_open_port(7860)
 
+    # An open 443 only proves the socket is bound. Chrome needs the whole path --
+    # /etc/hosts override, TLS handshake against the test CA, and a hub that
+    # answers -- so prove it end-to-end before the browsers start; otherwise a
+    # slow-booting hub surfaces as an opaque `chrome-error://` page.
+    machine.wait_until_succeeds(
+        "curl -sSf https://huggingface.co/api/models/test-org/tiny-model "
+        "| jq -e '.id == \"test-org/tiny-model\"'",
+        timeout=120,
+    )
+
     token = machine.succeed("jq -r .api_token /var/lib/hugger/config.json").strip()
 
     # Stage the extension with the token baked into defaults.js (no popup clicks),
@@ -85,12 +95,12 @@ pkgs.testers.runNixOSTest {
         "FIREFOX_BIN=${pkgs.firefox}/bin/firefox GECKODRIVER=${pkgs.geckodriver}/bin/geckodriver"
     )
 
-    # 420s per browser: one navigation retry on a transient renderer stall
-    # (60s budget each) plus the real assertions, which are never retried.
+    # 540s per browser: up to three navigation attempts (60s budget each, two
+    # page loads) plus the real assertions, which are never retried.
     with subtest("chromium"):
-        print(machine.succeed(f"{env} ${pyEnv}/bin/python ${./browser_check.py} chrome", timeout=420))
+        print(machine.succeed(f"{env} ${pyEnv}/bin/python ${./browser_check.py} chrome", timeout=540))
 
     with subtest("firefox"):
-        print(machine.succeed(f"{env} ${pyEnv}/bin/python ${./browser_check.py} firefox", timeout=420))
+        print(machine.succeed(f"{env} ${pyEnv}/bin/python ${./browser_check.py} firefox", timeout=540))
   '';
 }
