@@ -6,7 +6,19 @@
 #
 # Output: a directory holding the single built wheel; `passthru.wheelName` is
 # its deterministic filename (maturin --compatibility linux + abi3-py38).
-{ lib, stdenv, fetchFromGitHub, rustPlatform, cargo, rustc, maturin, python }:
+#
+# This is a hand-rolled stdenv cargo build (not buildRustPackage), so nixpkgs'
+# cargoSetupHook would still apply its "use system libraries" policy to every
+# crate: since nixpkgs 26.11 it exports AWS_LC_SYS_USE_SYSTEM=1 unconditionally
+# (cargoUseSystemLibs preConfigure hook), which aws-lc-sys 0.45 then resolves
+# with pkg-config. That only works for derivations that add `aws-lc` to
+# buildInputs (what default-crate-overrides does for buildRustPackage): here it
+# aborts with "AWS_LC_SYS_USE_SYSTEM=1 requires a system-installed AWS-LC".
+# Opt out instead and let aws-lc-sys build its bundled AWS-LC statically, so the
+# wheel stays self-contained — a wheel's Rust cdylib cannot carry Nix rpaths for
+# a shared libcrypto-awslc, and it is installed by uv2nix from the packed wheel.
+{ lib, stdenv, fetchFromGitHub, rustPlatform, cargo, rustc, maturin, python
+, cmake }:
 
 let
   version = "1.7.0";
@@ -34,7 +46,15 @@ stdenv.mkDerivation {
     lockFile = ./hf-xet-Cargo.lock;
   };
 
-  nativeBuildInputs = [ rustPlatform.cargoSetupHook cargo rustc maturin python ];
+  nativeBuildInputs = [ rustPlatform.cargoSetupHook cargo rustc maturin python cmake ];
+
+  # Keep the wheel self-contained: build the bundled AWS-LC instead of linking
+  # the system one that cargoSetupHook's AWS_LC_SYS_USE_SYSTEM=1 asks for (see
+  # the header comment).
+  dontCargoUseSystemLibs = true;
+  # `cmake` is only needed by aws-lc-sys' build script at build time, not as the
+  # stdenv CMake hook's configure phase (this tree is built by maturin).
+  dontUseCmakeConfigure = true;
 
   buildPhase = ''
     runHook preBuild
