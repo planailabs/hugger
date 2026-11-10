@@ -9,7 +9,11 @@ test:
   script:
     # Unit + HTTP integration + live-Hub tests (live tests skip when offline).
     - bash test.sh
-  timeout: 1h
+  # 2h, not 1h: a flake input bump invalidates the CI image closure, so the
+  # runner cold-builds it inside this job's budget before test.sh even starts
+  # (observed 38 min) and test.sh then builds its own devShell. Warm runs take
+  # ~16 min, cold ones ~95 min, so 1h only holds on a warm store.
+  timeout: 2h
 
 deploy:
   stage: deploy
